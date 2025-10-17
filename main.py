@@ -65,7 +65,7 @@ async def solve(files: List[UploadFile] = File(...)):
     # Send request to OpenAI
     try:
         completion = client.chat.completions.create(
-            model="gpt-4o",   # or "gpt-5" if available in your org
+            model="gpt-5-search-api",   # or "gpt-5" if available in your org
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": [
