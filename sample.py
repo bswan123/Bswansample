@@ -80,10 +80,36 @@ def test_page():
     return HTMLResponse(content=html)
 
 def extract_question_number_from_filename(filename: Optional[str]):
+    """
+    Robust filename -> question number extractor.
+    Rules:
+    1) If filename contains pattern like q5 or Q5 -> return 5
+    2) Else find first integer in filename but only accept it if <= 999 (to avoid timestamps).
+    3) Otherwise return None.
+    """
     if not filename:
         return None
-    m = re.search(r'(\d+)', filename)
-    return int(m.group(1)) if m else None
+
+    # try q<num> pattern first (q5, Q12)
+    m = re.search(r'[qQ][\-_ ]?(\d{1,3})', filename)
+    if m:
+        try:
+            return int(m.group(1))
+        except:
+            pass
+
+    # find any integer substrings and accept small reasonable numbers
+    all_nums = re.findall(r'(\d+)', filename)
+    for num in all_nums:
+        try:
+            n = int(num)
+        except:
+            continue
+        # ignore huge numbers (timestamps etc). Accept reasonable question numbers up to 999
+        if 1 <= n <= 999:
+            return n
+
+    return None
 
 def try_parse_json_candidate(text: str):
     """Try to extract a JSON object from text; return dict or None."""
@@ -131,7 +157,7 @@ def sanitize_and_build_response(parsed: dict, qnum: Optional[int], total_images:
     return out
 
 def fallback_extract_letter(text: str):
-    m = re.search(r'([A-E])', text, re.IGNORECASE)
+    m = re.search(r'\b([A-E])\b', text, re.IGNORECASE)
     return m.group(1).upper() if m else None
 
 @app.post("/solve")
@@ -175,7 +201,8 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
     user_text = (
         "These images together form a single MCQ (question + options). "
         "Read all images carefully, perform calculations if needed, and respond with EXACT JSON matching the schema in the system prompt. "
-        "Do NOT include any other text."
+        "The first uploaded filename may contain the question number; if present, use it. "
+        "Respond only with the required JSON."
     )
 
     try:
@@ -185,10 +212,9 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
                 {"role":"system", "content": SYSTEM_PROMPT},
                 {"role":"user", "content": [ {"type":"text","text": user_text} ] + imgs}
             ],
-            # optional: you may set max_tokens or timeout via client SDK if needed
         )
 
-        # Extract text
+        # Extract model text
         raw = ""
         try:
             raw = res.choices[0].message.content.strip()
