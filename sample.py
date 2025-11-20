@@ -18,6 +18,15 @@ client = None
 if API_KEY:
     client = openai.OpenAI(api_key=API_KEY, project=PROJECT_ID) if PROJECT_ID else openai.OpenAI(api_key=API_KEY)
 
+# --- Morse map for A-E (server provides this in response) ---
+MORSE_MAP = {
+    "A": ".-",
+    "B": "-...",
+    "C": "-.-.",
+    "D": "-..",
+    "E": "."
+}
+
 # --- Strict system prompt (JSON only) ---
 SYSTEM_PROMPT = """
 You are an OCR + reasoning assistant specialized in multi-image multiple-choice questions (MCQs).
@@ -32,9 +41,10 @@ Rules (follow exactly):
   "total_images": <integer>,
   "status": "ok" | "unclear" | "confused",
   "correct_option": "A" | "B" | "C" | "D" | "E" | null,
+  "morse": "<string like .- or -... or null>",
   "explanation": "<short one-line reason or null>"
 }
-6) If you determine the correct option, set status=\"ok\", correct_option to the letter, explanation = short reason (max 20 words). If unclear/confused set correct_option=null.
+6) If you determine the correct option, set status=\"ok\", correct_option to the letter, morse to the correct morse string, explanation = short reason (max 20 words). If unclear/confused set correct_option=null and morse=null.
 7) Do NOT include any other fields or non-JSON text.
 """
 
@@ -80,47 +90,31 @@ def test_page():
     return HTMLResponse(content=html)
 
 def extract_question_number_from_filename(filename: Optional[str]):
-    """
-    Robust filename -> question number extractor.
-    Rules:
-    1) If filename contains pattern like q5 or Q5 -> return 5
-    2) Else find first integer in filename but only accept it if <= 999 (to avoid timestamps).
-    3) Otherwise return None.
-    """
     if not filename:
         return None
-
-    # try q<num> pattern first (q5, Q12)
     m = re.search(r'[qQ][\-_ ]?(\d{1,3})', filename)
     if m:
         try:
             return int(m.group(1))
         except:
             pass
-
-    # find any integer substrings and accept small reasonable numbers
     all_nums = re.findall(r'(\d+)', filename)
     for num in all_nums:
         try:
             n = int(num)
         except:
             continue
-        # ignore huge numbers (timestamps etc). Accept reasonable question numbers up to 999
         if 1 <= n <= 999:
             return n
-
     return None
 
 def try_parse_json_candidate(text: str):
-    """Try to extract a JSON object from text; return dict or None."""
-    # First try raw parse
     try:
         j = json.loads(text)
         if isinstance(j, dict):
             return j
     except Exception:
         pass
-    # If the model wrapped JSON in text, search for first { ... } substring:
     start = text.find('{')
     end = text.rfind('}')
     if start != -1 and end != -1 and end > start:
@@ -140,11 +134,11 @@ def sanitize_and_build_response(parsed: dict, qnum: Optional[int], total_images:
         "total_images": total_images,
         "status": "confused",
         "correct_option": None,
+        "morse": None,
         "explanation": None
     }
     if not parsed:
         return out
-    # copy fields if valid
     status = parsed.get("status")
     if status in ("ok","unclear","confused"):
         out["status"] = status
@@ -152,6 +146,10 @@ def sanitize_and_build_response(parsed: dict, qnum: Optional[int], total_images:
         opt = parsed.get("correct_option").strip().upper()
         if opt in ("A","B","C","D","E"):
             out["correct_option"] = opt
+            out["morse"] = MORSE_MAP.get(opt)  # attach morse string
+    if parsed.get("morse") and isinstance(parsed.get("morse"), str) and out["morse"] is None:
+        # if model itself provided morse, accept it (but still prefer canonical map)
+        out["morse"] = parsed.get("morse").strip()
     if parsed.get("explanation"):
         out["explanation"] = str(parsed.get("explanation"))[:200]
     return out
@@ -177,17 +175,16 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
 
     total_images = len(files) if files else 0
 
-    # If OpenAI client missing -> helpful error
     if client is None:
         return JSONResponse({
             "question_number": q_number,
             "total_images": total_images,
             "status": "unclear",
             "correct_option": None,
+            "morse": None,
             "explanation": "OPENAI_API_KEY not set in env"
         }, status_code=500)
 
-    # Convert files to data URLs for image input
     imgs = []
     for f in files:
         data = await f.read()
@@ -197,7 +194,6 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
         })
 
-    # Build user message instructing strict JSON output
     user_text = (
         "These images together form a single MCQ (question + options). "
         "Read all images carefully, perform calculations if needed, and respond with EXACT JSON matching the schema in the system prompt. "
@@ -207,32 +203,33 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
 
     try:
         res = client.chat.completions.create(
-            model="gpt-5",  # use gpt-5 per request; if unavailable replace with gpt-4o
+            model="gpt-5",  # change to gpt-4o if you get model-not-found
             messages=[
                 {"role":"system", "content": SYSTEM_PROMPT},
                 {"role":"user", "content": [ {"type":"text","text": user_text} ] + imgs}
             ],
         )
 
-        # Extract model text
         raw = ""
         try:
             raw = res.choices[0].message.content.strip()
         except Exception:
             raw = str(res)
 
-        # Try robust JSON parsing
         parsed = try_parse_json_candidate(raw)
         if parsed:
             out = sanitize_and_build_response(parsed, q_number, total_images)
-            # If status ok but no correct_option extracted, try fallback letter
             if out["status"] == "ok" and out["correct_option"] is None:
                 fletter = fallback_extract_letter(raw)
                 if fletter:
                     out["correct_option"] = fletter
+                    out["morse"] = MORSE_MAP.get(fletter)
+            # ensure morse present when correct_option available
+            if out["correct_option"] and out["morse"] is None:
+                out["morse"] = MORSE_MAP.get(out["correct_option"])
             return JSONResponse(out)
 
-        # If no JSON parsed, try to extract a single letter as fallback
+        # fallback: extract single letter
         letter = fallback_extract_letter(raw)
         if letter:
             out = {
@@ -240,21 +237,22 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
                 "total_images": total_images,
                 "status": "ok",
                 "correct_option": letter,
+                "morse": MORSE_MAP.get(letter),
                 "explanation": None
             }
             return JSONResponse(out)
 
-        # final fallback: unclear
+        # final fallback unclear
         return JSONResponse({
             "question_number": q_number,
             "total_images": total_images,
             "status": "unclear",
             "correct_option": None,
-            "explanation": raw[:200]  # small hint
+            "morse": None,
+            "explanation": raw[:200]
         }, status_code=200)
 
     except Exception as e:
-        # On exception, try to salvage letter from error text
         letter = fallback_extract_letter(str(e))
         if letter:
             return JSONResponse({
@@ -262,6 +260,7 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
                 "total_images": total_images,
                 "status": "ok",
                 "correct_option": letter,
+                "morse": MORSE_MAP.get(letter),
                 "explanation": "extracted from exception"
             }, status_code=200)
 
@@ -270,5 +269,6 @@ async def solve(files: List[UploadFile] = File(...), qnum: Optional[str] = Form(
             "total_images": total_images,
             "status": "unclear",
             "correct_option": None,
+            "morse": None,
             "explanation": str(e)[:200]
         }, status_code=500)
