@@ -6,10 +6,11 @@ Run with:
   uvicorn server_queue:app --host 0.0.0.0 --port $PORT --workers 1
 
 Env vars (optional):
-  OPENAI_API_KEY  - your OpenAI key (recommended)
-  WORKER_COUNT    - number of worker threads (default 3)
-  CHILD_TIMEOUT   - seconds to wait for child before killing it (default 150)
-  UPLOAD_ROOT     - base folder for uploads (default /tmp/uploads)
+  OPENAI_API_KEY      - your OpenAI key (recommended)
+  OPENAI_PROJECT_ID   - your OpenAI project id (for sk-proj-... keys) (optional but recommended if using sk-proj keys)
+  WORKER_COUNT        - number of worker threads (default 3)
+  CHILD_TIMEOUT       - seconds to wait for child before killing it (default 150)
+  UPLOAD_ROOT         - base folder for uploads (default /tmp/uploads)
 """
 
 import os
@@ -27,11 +28,21 @@ from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 
-# Try importing openai; keep optional for simulated mode
+# Try importing the modern OpenAI SDK client (preferred)
 try:
-    import openai
+    from openai import OpenAI as OpenAIClient
+    OPENAI_SDK_AVAILABLE = True
 except Exception:
-    openai = None
+    OpenAIClient = None
+    OPENAI_SDK_AVAILABLE = False
+
+# Also allow older 'openai' import fallback (best-effort)
+try:
+    import openai as legacy_openai
+    LEGACY_OPENAI_AVAILABLE = True
+except Exception:
+    legacy_openai = None
+    LEGACY_OPENAI_AVAILABLE = False
 
 # ---------- Configuration with sensible defaults ----------
 UPLOAD_ROOT = Path(os.environ.get("UPLOAD_ROOT", "/tmp/uploads"))
@@ -39,7 +50,8 @@ UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 WORKER_COUNT = int(os.environ.get("WORKER_COUNT", "3"))
 CHILD_TIMEOUT = int(os.environ.get("CHILD_TIMEOUT", "150"))
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  # if None -> simulated mode
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  # required for real GPT calls
+OPENAI_PROJECT_ID = os.environ.get("OPENAI_PROJECT_ID")  # optional but required for sk-proj keys
 
 # ---------- In-memory state ----------
 TASK_QUEUE = queue.Queue()
@@ -49,7 +61,7 @@ CANCELLED = set()
 # Map task_id -> child process object so cancel endpoint can terminate running child
 PROCESS_MAP = {}
 
-app = FastAPI(title="Exam Solver Queue Server")
+app = FastAPI(title="Exam Solver Queue Server (with OpenAI project support)")
 
 
 # ---------- Utility helpers ----------
@@ -100,54 +112,89 @@ def child_process_work(task_id: str, image_paths: List[str], question_number: Op
             prompt += f" Question number: {question_number}."
         prompt += " Return JSON only: {\"correct_option\":\"A|B|C|D\",\"explanation\":\"...\"}."
 
-        # If no OpenAI key or module available -> simulated response for quick testing
-        if openai is None or not OPENAI_API_KEY:
+        # If no OpenAI key or SDK available -> simulated response for quick testing
+        if (not OPENAI_API_KEY) or (not OPENAI_SDK_AVAILABLE and not LEGACY_OPENAI_AVAILABLE):
             simulated = {
                 "correct_option": "A",
-                "explanation": "Simulated result (OPENAI_API_KEY not configured)."
+                "explanation": "Simulated result (OPENAI_API_KEY or OpenAI SDK not configured)."
             }
             write_result_file(task_id, {"status": "done", "result": simulated})
             return
 
-        # Real OpenAI usage (example). Adjust model/payload to your account & required model.
-        openai.api_key = OPENAI_API_KEY
+        # === Preferred: modern OpenAI SDK (from openai import OpenAI) ===
+        if OPENAI_SDK_AVAILABLE:
+            # Create client. If OPENAI_PROJECT_ID is provided, pass it; else create without project arg.
+            if OPENAI_PROJECT_ID:
+                client = OpenAIClient(api_key=OPENAI_API_KEY, project=OPENAI_PROJECT_ID)
+            else:
+                client = OpenAIClient(api_key=OPENAI_API_KEY)
 
-        system_msg = {
-            "role": "system",
-            "content": "You are an expert exam-solver that examines images and returns the correct multiple-choice option."
-        }
-        user_msg = {
-            "role": "user",
-            "content": prompt + " Do not include any extra commentary; reply with a JSON object."
-        }
+            system_msg = {"role": "system", "content": "You are an expert exam-solver that examines images and returns the correct multiple-choice option."}
+            user_msg = {"role": "user", "content": prompt + " Do not include any commentary; respond with a JSON object."}
 
-        # Basic ChatCompletion call (replace model name with one you have access to)
-        resp = openai.ChatCompletion.create(
-            model="gpt-4o-mini",  # change to a model you have access to
-            messages=[system_msg, user_msg],
-            max_tokens=200,
-            temperature=0
-        )
-        text = resp["choices"][0]["message"]["content"].strip()
+            # Use Chat Completions create for modern client
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",  # change to a model you have access to
+                    messages=[system_msg, user_msg],
+                    max_tokens=200,
+                    temperature=0
+                )
+                # Response shape: resp.choices[0].message.content  (best-effort)
+                text = None
+                try:
+                    text = resp.choices[0].message.content.strip()
+                except Exception:
+                    # alternative access pattern
+                    try:
+                        text = resp.choices[0].message["content"].strip()
+                    except Exception:
+                        text = str(resp)
+
+            except Exception as e:
+                # If SDK call fails, write failure
+                write_result_file(task_id, {"status": "failed", "error": f"OpenAI SDK call error: {e}", "trace": traceback.format_exc()})
+                return
+
+        # === Fallback: legacy openai package (openai.ChatCompletion.create) ===
+        elif LEGACY_OPENAI_AVAILABLE:
+            try:
+                legacy_openai.api_key = OPENAI_API_KEY
+                # Some legacy setups require organization/project info in headers; not handled here.
+                resp = legacy_openai.ChatCompletion.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are an expert exam-solver that examines images and returns the correct multiple-choice option."},
+                        {"role": "user", "content": prompt + " Do not include commentary; reply with JSON."}
+                    ],
+                    max_tokens=200,
+                    temperature=0
+                )
+                text = resp["choices"][0]["message"]["content"].strip()
+            except Exception as e:
+                write_result_file(task_id, {"status": "failed", "error": f"legacy openai call error: {e}", "trace": traceback.format_exc()})
+                return
+        else:
+            # shouldn't reach here; safety fallback
+            write_result_file(task_id, {"status": "failed", "error": "No OpenAI SDK available."})
+            return
 
         # Attempt to parse JSON; if fails, extract first letter A-D
-        parsed = None
         try:
             parsed = json.loads(text)
-            # Normalize keys if necessary
             if "correct_option" in parsed:
                 result = parsed
             else:
-                # fallback to pick A-D if JSON doesn't include correct_option
                 import re
                 m = re.search(r"[A-D]", text.upper())
                 result = {"correct_option": m.group(0) if m else None, "raw": parsed}
         except Exception:
             import re
-            m = re.search(r"[A-D]", text.upper())
+            m = re.search(r"[A-D]", text.upper()) if isinstance(text, str) else None
             result = {"correct_option": m.group(0) if m else None, "raw": text}
 
         write_result_file(task_id, {"status": "done", "result": result})
+
     except Exception as e:
         write_result_file(task_id, {"status": "failed", "error": str(e), "trace": traceback.format_exc()})
 
@@ -211,6 +258,7 @@ def startup_event():
         t = Thread(target=worker_loop, args=(i,), daemon=True)
         t.start()
     print(f"Server started with {WORKER_COUNT} worker threads (CHILD_TIMEOUT={CHILD_TIMEOUT}s)")
+    print(f"OpenAI SDK available: {OPENAI_SDK_AVAILABLE}, legacy openai available: {LEGACY_OPENAI_AVAILABLE}")
 
 
 @app.post("/upload")
