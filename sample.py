@@ -1,85 +1,55 @@
-from fastapi import FastAPI, File, UploadFile, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+import re
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse
 from typing import List
 import openai, base64, os, json
 
 app = FastAPI()
 
-# ---- OpenAI Project-based Auth ----
 api_key = os.getenv("OPENAI_API_KEY")
 project_id = os.getenv("OPENAI_PROJECT_ID")
-
 if not api_key:
     raise RuntimeError("Missing OPENAI_API_KEY")
-
 client = openai.OpenAI(api_key=api_key, project=project_id) if project_id else openai.OpenAI(api_key=api_key)
 
 SYSTEM_PROMPT = """
 You are an OCR + reasoning assistant for multi-image MCQ questions.
-Each image may contain part of the question (text, diagram, or options).
-Combine all image content to find the correct option (A/B/C/D/E).
-
-Return only JSON like:
+Return JSON like:
 {
   "status": "ok" | "unclear" | "confused",
   "correct_option": "A" | "B" | "C" | "D" | "E" | null,
   "explanation": "short reason (optional)"
 }
-If image is blurry → status="unclear".
-If more than one answer possible → status="confused".
 """
 
-# -------------------- ROUTES --------------------
+def extract_question_number_from_filename(filename: str):
+    if not filename:
+        return None
+    m = re.search(r'(\d+)', filename)
+    return int(m.group(1)) if m else None
 
-@app.get("/")
-def home():
-    return {"message": "✅ GPT Multi-Image Solver API (Production) Active"}
-
-@app.get("/test", response_class=HTMLResponse)
-def upload_form():
-    html = """
-    <html>
-    <head>
-    <title>🧠 GPT Multi-Image Solver Test</title>
-    <style>
-      body { font-family: sans-serif; margin: 2em; }
-      .preview img { height: 120px; margin: 5px; border-radius: 8px; border: 1px solid #aaa; }
-      .count { color: gray; font-size: 0.9em; margin-top: 5px; }
-    </style>
-    <script>
-      function updatePreview(event) {
-          const files = event.target.files;
-          const preview = document.getElementById('preview');
-          const count = document.getElementById('count');
-          preview.innerHTML = '';
-          for (let i = 0; i < files.length; i++) {
-              const img = document.createElement('img');
-              img.src = URL.createObjectURL(files[i]);
-              preview.appendChild(img);
-          }
-          count.textContent = files.length + ' image(s) selected';
-      }
-    </script>
-    </head>
-    <body>
-      <h2>🧠 GPT Multi-Image Question Solver (Render Test)</h2>
-      <form action="/solve" enctype="multipart/form-data" method="post">
-        <p>Select all related images for one question:</p>
-        <input name="files" type="file" multiple accept="image/*" onchange="updatePreview(event)">
-        <div id="count" class="count">No images selected</div>
-        <div id="preview" class="preview"></div>
-        <br>
-        <input type="submit" value="Upload & Solve" style="padding: 8px 16px;">
-      </form>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
+def extract_option_from_text(text: str):
+    # Try to load JSON if present
+    try:
+        j = json.loads(text)
+        if isinstance(j, dict) and j.get("correct_option"):
+            return (j.get("correct_option") or "").strip().upper()
+    except Exception:
+        pass
+    # Try to find "correct_option": "X"
+    m = re.search(r'correct_option\"\s*:\s*\"?([A-E])\"?', text, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    # Find standalone letter A/B/C/D/E (bounded by non-letters/digits or quotes)
+    m2 = re.search(r'\b([A-E])\b', text, re.IGNORECASE)
+    if m2:
+        return m2.group(1).upper()
+    return None
 
 @app.post("/solve")
 async def solve(files: List[UploadFile] = File(...)):
-    if not files:
-        return JSONResponse({"status": "unclear", "correct_option": None, "explanation": "No images received."})
+    # get question number from first filename if present
+    qnum = extract_question_number_from_filename(files[0].filename) if files else None
 
     imgs = []
     for f in files:
@@ -93,21 +63,23 @@ async def solve(files: List[UploadFile] = File(...)):
 
     try:
         res = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "These images together form one MCQ (question + options). Read all carefully and answer with the correct option (A/B/C/D/E)."}
+                    {"type": "text", "text": "These images together form one MCQ (question + options). Read all carefully and answer with the correct option (A/B/C/D/E). Return only the JSON described in the system prompt."}
                 ] + imgs}
             ]
         )
 
         raw = res.choices[0].message.content.strip()
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = {"status": "confused", "correct_option": None, "explanation": raw}
-        return parsed
+        # try parse JSON first
+        correct = extract_option_from_text(raw)
+
+        # final minimal response
+        return JSONResponse({"question_number": qnum, "correct_option": correct})
 
     except Exception as e:
-        return {"status": "unclear", "correct_option": None, "explanation": f"Error: {str(e)}"}
+        # fallback - try to salvage any letter from exception text
+        fallback_opt = extract_option_from_text(str(e))
+        return JSONResponse({"question_number": qnum, "correct_option": fallback_opt})
