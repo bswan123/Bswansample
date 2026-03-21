@@ -7,7 +7,7 @@ app = FastAPI()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------
-# 🔹 MODELS
+# 🔹 REQUEST MODEL
 # -----------------------------
 class TextRequest(BaseModel):
     qid: str
@@ -15,25 +15,23 @@ class TextRequest(BaseModel):
 
 
 # -----------------------------
-# 🔹 CLEAN QID (LOOSE)
+# 🔹 QID CLEAN (LOOSE)
 # -----------------------------
 def clean_qid(qid):
     try:
         qid = str(qid)
         m = re.search(r'\d+', qid)
-        if m:
-            return "Q" + m.group()
-        return qid.strip()
+        return "Q" + m.group() if m else qid.strip()
     except:
         return "Q0"
 
 
 # -----------------------------
-# 🔹 CLEAN TEXT
+# 🔹 TEXT CLEAN
 # -----------------------------
 def clean_text(text):
-    text = text.replace("|", " ")
     text = text.replace(";;", " ## ")
+    text = text.replace("|", " ")
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
@@ -42,13 +40,14 @@ def clean_text(text):
 # 🔹 OCR NUMBER FIX
 # -----------------------------
 def fix_ocr_numbers(text):
+
     # 1 4 → 1.4
     text = re.sub(r'(\d)\s+(\d)', r'\1.\2', text)
 
-    # 3 1/5 → 3.2 approx
+    # 3 1/5 → 3.2
     text = re.sub(r'(\d)\s+1/5', r'\1.2', text)
 
-    # ratio context
+    # ratio fix
     if "ratio" in text.lower():
         text = re.sub(r'(\d)\.(\d)', r'\1:\2', text)
 
@@ -56,27 +55,47 @@ def fix_ocr_numbers(text):
 
 
 # -----------------------------
-# 🔹 TYPE DETECTOR (SOFT)
+# 🔹 TYPE DETECTION (FIXED 🔥)
 # -----------------------------
 def detect_type(text):
+
     t = text.lower()
 
-    if "," in t:
-        return "SERIES"
+    # 🔥 CONTEXT FIRST (IMPORTANT)
+    if any(x in t for x in ["invest", "profit", "salary", "share"]):
+        return "PARTNERSHIP"
 
     if "ratio" in t:
         return "RATIO"
 
-    if "salary" in t or "invest" in t or "profit" in t:
-        return "PARTNERSHIP"
-
-    if "train" in t or "speed" in t or "distance" in t:
+    if any(x in t for x in ["train", "speed", "distance", "km"]):
         return "TIME_WORK"
 
     if "%" in t or "percent" in t:
         return "PERCENTAGE"
 
+    # 🔥 SERIES (STRICT)
+    numbers = re.findall(r'\d+', t)
+
+    if len(numbers) >= 4:
+        if re.match(r'^[\d,\s;:\-]+$', t.strip()):
+            return "SERIES"
+
     return "ARITHMETIC"
+
+
+# -----------------------------
+# 🔹 ANTI-SERIES OVERRIDE
+# -----------------------------
+def force_override_type(dtype, text):
+
+    t = text.lower()
+
+    if dtype == "SERIES":
+        if any(word in t for word in ["invest", "salary", "profit", "ratio", "km"]):
+            return "ARITHMETIC"
+
+    return dtype
 
 
 # -----------------------------
@@ -98,28 +117,22 @@ def build_prompt(qid, text, dtype):
     return f"""
 You are an SSC-level math solver.
 
-Input may contain OCR mistakes:
-- broken numbers (1 4 → 1.4)
-- wrong symbols (3.4 → 3:4 if ratio)
+Input may have OCR errors:
+- 1 4 → 1.4
+- 3.4 → 3:4 (if ratio)
 - missing words
 
-Your job:
-- Understand using CONTEXT (not blind guess)
-- Fix likely OCR errors mentally
-- Solve logically
+Understand using context.
 
 Rules:
-
-1. Do NOT assume randomly
-2. Do NOT ignore logic (salary ≠ partner)
-3. Solve even if slightly messy
-4. If options present → use them as support only
-5. If no options → still solve
-6. If unclear → give best logical answer (low confidence)
+- Do NOT assume blindly
+- salary ≠ partner
+- solve even if slightly messy
+- options are optional (support only)
 
 Detected type: {dtype}
 
-OUTPUT:
+Output:
 
 QID: {qid}
 ANS: <answer>
@@ -158,7 +171,7 @@ def solve_image_gpt(qid, image_bytes):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": f"QID: {qid} Solve this question"},
+                        {"type": "text", "text": f"QID: {qid} Solve"},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
@@ -194,18 +207,16 @@ def parse_output(raw, qid):
 
 
 # -----------------------------
-# 🔹 POST VALIDATION (LIGHT)
+# 🔹 POST VALIDATION
 # -----------------------------
 def post_validate(result, text):
 
     t = text.lower()
 
-    # salary safeguard
-    if "salary" in t:
-        if "partner" not in t:
-            result["CONF"] = max(result["CONF"] - 0.15, 0.1)
+    # salary safety
+    if "salary" in t and "partner" not in t:
+        result["CONF"] = max(result["CONF"] - 0.15, 0.1)
 
-    # garbage fallback
     if result["ANS"] == "UNKNOWN":
         result["CONF"] = min(result["CONF"], 0.3)
 
@@ -236,6 +247,7 @@ def solve(qid, content, is_image=False):
         content = fix_ocr_numbers(content)
 
         dtype = detect_type(content)
+        dtype = force_override_type(dtype, content)
 
         prompt = build_prompt(qid, content, dtype)
 
