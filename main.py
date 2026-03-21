@@ -15,117 +15,129 @@ class TextRequest(BaseModel):
 
 
 # -----------------------------
-# 🔹 CLEANERS
+# 🔹 CLEAN QID (LOOSE)
 # -----------------------------
 def clean_qid(qid):
-    qid = str(qid).upper()
-    m = re.search(r'\d+', qid)
-    return "Q" + m.group() if m else "Q0"
+    try:
+        qid = str(qid)
+        m = re.search(r'\d+', qid)
+        if m:
+            return "Q" + m.group()
+        return qid.strip()
+    except:
+        return "Q0"
 
 
+# -----------------------------
+# 🔹 CLEAN TEXT
+# -----------------------------
 def clean_text(text):
     text = text.replace("|", " ")
     text = text.replace(";;", " ## ")
-    text = text.replace(";", " ")
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
 
 # -----------------------------
-# 🔹 MORSE TYPE DETECTOR
+# 🔹 OCR NUMBER FIX
 # -----------------------------
-def detect_input_type(text):
-    # series
-    if "##" in text or "," in text:
+def fix_ocr_numbers(text):
+    # 1 4 → 1.4
+    text = re.sub(r'(\d)\s+(\d)', r'\1.\2', text)
+
+    # 3 1/5 → 3.2 approx
+    text = re.sub(r'(\d)\s+1/5', r'\1.2', text)
+
+    # ratio context
+    if "ratio" in text.lower():
+        text = re.sub(r'(\d)\.(\d)', r'\1:\2', text)
+
+    return text
+
+
+# -----------------------------
+# 🔹 TYPE DETECTOR (SOFT)
+# -----------------------------
+def detect_type(text):
+    t = text.lower()
+
+    if "," in t:
         return "SERIES"
 
-    # quadratic pattern: a,b,c;d,e,f
-    if re.match(r"[\d\-,]+;[\d\-,]+", text):
-        return "QUADRATIC"
+    if "ratio" in t:
+        return "RATIO"
 
-    return "TEXT"
+    if "salary" in t or "invest" in t or "profit" in t:
+        return "PARTNERSHIP"
+
+    if "train" in t or "speed" in t or "distance" in t:
+        return "TIME_WORK"
+
+    if "%" in t or "percent" in t:
+        return "PERCENTAGE"
+
+    return "ARITHMETIC"
 
 
 # -----------------------------
-# 🔹 GARBAGE DETECTOR
+# 🔹 GARBAGE CHECK
 # -----------------------------
 def is_garbage(text):
     if len(text) < 5:
         return True
-    if sum(c.isdigit() for c in text) == 0 and len(text) < 20:
+    if sum(c.isdigit() for c in text) == 0 and len(text) < 15:
         return True
     return False
 
 
 # -----------------------------
-# 🔹 PROMPT (FINAL 🔥)
+# 🔹 PROMPT (BALANCED 🔥)
 # -----------------------------
-SYSTEM_PROMPT = """
-You are a highly accurate SSC exam solver.
+def build_prompt(qid, text, dtype):
 
-INPUT TYPES:
-- OCR messy text
-- Image question
-- Numeric series
-- Arithmetic word problems
+    return f"""
+You are an SSC-level math solver.
 
-IMPORTANT RULES:
+Input may contain OCR mistakes:
+- broken numbers (1 4 → 1.4)
+- wrong symbols (3.4 → 3:4 if ratio)
+- missing words
 
-1. ALWAYS attempt solving
-2. Fix OCR mistakes:
-   3.4 → 3:4
-   1 5 → 1.5
-   3 1/5 → 3.2
+Your job:
+- Understand using CONTEXT (not blind guess)
+- Fix likely OCR errors mentally
+- Solve logically
 
-3. OPTIONS:
-   - May be missing or wrong
-   - Solve independently first
-   - Then match if possible
+Rules:
 
-4. SERIES:
-   - Detect pattern even with noise
+1. Do NOT assume randomly
+2. Do NOT ignore logic (salary ≠ partner)
+3. Solve even if slightly messy
+4. If options present → use them as support only
+5. If no options → still solve
+6. If unclear → give best logical answer (low confidence)
 
-5. WORD PROBLEMS:
-   - Handle short forms:
-     tsd = time speed distance
-     s=32km/hr
-     d=4km
-
-6. IF NOT CLEAR:
-   - Guess using SSC patterns
-
-7. GARBAGE:
-   - If completely unreadable:
-     TYPE: GARBAGE
-
-CONF:
-0.9 high
-0.7 medium
-0.4 low
-<0.4 guess
+Detected type: {dtype}
 
 OUTPUT:
 
-QID: <id>
+QID: {qid}
 ANS: <answer>
-TYPE: <ARITHMETIC | SERIES | RATIO | AGE | TIME_WORK | PERCENTAGE | NUMBER | QUADRATIC | GARBAGE | UNKNOWN>
+TYPE: {dtype}
 CONF: <0-1>
 
-NO explanation.
+No explanation.
 """
 
 
 # -----------------------------
 # 🔹 GPT TEXT
 # -----------------------------
-def solve_text_gpt(qid, text):
+def solve_text_gpt(prompt):
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"QID: {qid}\n{text}"}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
         return res.choices[0].message.content
@@ -134,7 +146,7 @@ def solve_text_gpt(qid, text):
 
 
 # -----------------------------
-# 🔹 GPT IMAGE (VISION)
+# 🔹 GPT IMAGE
 # -----------------------------
 def solve_image_gpt(qid, image_bytes):
     try:
@@ -143,17 +155,16 @@ def solve_image_gpt(qid, image_bytes):
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": f"QID: {qid}"},
+                        {"type": "text", "text": f"QID: {qid} Solve this question"},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
                         }
                     ],
-                },
+                }
             ],
         )
         return res.choices[0].message.content
@@ -183,6 +194,25 @@ def parse_output(raw, qid):
 
 
 # -----------------------------
+# 🔹 POST VALIDATION (LIGHT)
+# -----------------------------
+def post_validate(result, text):
+
+    t = text.lower()
+
+    # salary safeguard
+    if "salary" in t:
+        if "partner" not in t:
+            result["CONF"] = max(result["CONF"] - 0.15, 0.1)
+
+    # garbage fallback
+    if result["ANS"] == "UNKNOWN":
+        result["CONF"] = min(result["CONF"], 0.3)
+
+    return result
+
+
+# -----------------------------
 # 🔹 MAIN SOLVER
 # -----------------------------
 def solve(qid, content, is_image=False):
@@ -203,23 +233,22 @@ def solve(qid, content, is_image=False):
                 "CONF": 0.1
             }
 
-        input_type = detect_input_type(content)
+        content = fix_ocr_numbers(content)
 
-        # future: quadratic offline hook
-        if input_type == "QUADRATIC":
-            return {
-                "QID": qid,
-                "ANS": "USE_LOCAL_SOLVER",
-                "TYPE": "QUADRATIC",
-                "CONF": 0.9
-            }
+        dtype = detect_type(content)
 
-        raw = solve_text_gpt(qid, content)
+        prompt = build_prompt(qid, content, dtype)
+
+        raw = solve_text_gpt(prompt)
 
     if raw == "ERROR":
         return {"QID": qid, "ANS": "ERROR", "TYPE": "UNKNOWN", "CONF": 0.0}
 
-    return parse_output(raw, qid)
+    parsed = parse_output(raw, qid)
+
+    parsed = post_validate(parsed, content if not is_image else "")
+
+    return parsed
 
 
 # -----------------------------
@@ -243,4 +272,4 @@ async def test_ocr(qid: str = Form(...), text: str = Form(...)):
 
 @app.get("/")
 def home():
-    return {"status": "running"}
+    return {"status": "running 🚀"}
