@@ -255,23 +255,31 @@ def health():
     tags=["Solver"],
     summary="Solve text question (OCR / LoRa / Series / Quadratic / TSD)",
 )
-def solve_text(req: TextRequest):
+async def solve_text(
+    qid : str = Form(default="auto", description="Question ID e.g. Q1, Q2 (optional)"),
+    text: str = Form(...,            description="Exam question text — paste anything, messy OCR ok"),
+):
     """
-    Send any messy exam question text — OCR errors, shorthand, series, quadratic.
+    Paste any exam question text directly in the box below.
+    Messy OCR, broken words, newlines — all fine. GPT handles it.
 
-    **Examples you can try directly in /docs:**
-    - `gih invest 1 5 lacs salary 5000 prfit 1 4 lacs find each share`
+    **Examples:**
+    - `gih invest 1 5 lacs salary 5000 prfit 1 4 lacs`
     - `2,6,12,20,30;;42,44,46,50`
     - `1,-5,6;1,-4,4`
     - `tsd s=60 d=150 t=?`
     - `si p=5000 r=10 t=3`
     """
-    if not req.text.strip():
+    # clean control chars (newlines from textarea → spaces)
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text).strip()
+
+    if not text:
         return JSONResponse({"error": "empty text"}, status_code=400)
 
-    qid    = clean_qid(req.qid)
-    hint   = detect_type_hint(req.text)
-    result = call_gpt_text(qid, req.text, hint)
+    qid    = clean_qid(qid)
+    hint   = detect_type_hint(text)
+    result = call_gpt_text(qid, text, hint)
     return result
 
 
