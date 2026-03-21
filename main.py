@@ -4,10 +4,12 @@ import os, re, base64
 from openai import OpenAI
 
 app = FastAPI()
+
+# 🔥 SAFE CLIENT INIT
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------
-# 🔹 REQUEST MODEL
+# 🔹 MODEL
 # -----------------------------
 class TextRequest(BaseModel):
     qid: str
@@ -15,7 +17,7 @@ class TextRequest(BaseModel):
 
 
 # -----------------------------
-# 🔹 QID CLEAN (LOOSE)
+# 🔹 CLEAN QID
 # -----------------------------
 def clean_qid(qid):
     try:
@@ -27,7 +29,7 @@ def clean_qid(qid):
 
 
 # -----------------------------
-# 🔹 TEXT CLEAN
+# 🔹 CLEAN TEXT
 # -----------------------------
 def clean_text(text):
     text = text.replace(";;", " ## ")
@@ -37,17 +39,11 @@ def clean_text(text):
 
 
 # -----------------------------
-# 🔹 OCR NUMBER FIX
+# 🔹 OCR FIX
 # -----------------------------
 def fix_ocr_numbers(text):
-
-    # 1 4 → 1.4
     text = re.sub(r'(\d)\s+(\d)', r'\1.\2', text)
 
-    # 3 1/5 → 3.2
-    text = re.sub(r'(\d)\s+1/5', r'\1.2', text)
-
-    # ratio fix
     if "ratio" in text.lower():
         text = re.sub(r'(\d)\.(\d)', r'\1:\2', text)
 
@@ -55,13 +51,12 @@ def fix_ocr_numbers(text):
 
 
 # -----------------------------
-# 🔹 TYPE DETECTION (FIXED 🔥)
+# 🔹 TYPE DETECTION (FIXED)
 # -----------------------------
 def detect_type(text):
 
     t = text.lower()
 
-    # 🔥 CONTEXT FIRST (IMPORTANT)
     if any(x in t for x in ["invest", "profit", "salary", "share"]):
         return "PARTNERSHIP"
 
@@ -71,80 +66,50 @@ def detect_type(text):
     if any(x in t for x in ["train", "speed", "distance", "km"]):
         return "TIME_WORK"
 
-    if "%" in t or "percent" in t:
+    if "%" in t:
         return "PERCENTAGE"
 
-    # 🔥 SERIES (STRICT)
+    # STRICT SERIES
     numbers = re.findall(r'\d+', t)
-
-    if len(numbers) >= 4:
-        if re.match(r'^[\d,\s;:\-]+$', t.strip()):
-            return "SERIES"
+    if len(numbers) >= 4 and re.match(r'^[\d,\s;:\-]+$', t.strip()):
+        return "SERIES"
 
     return "ARITHMETIC"
 
 
 # -----------------------------
-# 🔹 ANTI-SERIES OVERRIDE
-# -----------------------------
-def force_override_type(dtype, text):
-
-    t = text.lower()
-
-    if dtype == "SERIES":
-        if any(word in t for word in ["invest", "salary", "profit", "ratio", "km"]):
-            return "ARITHMETIC"
-
-    return dtype
-
-
-# -----------------------------
-# 🔹 GARBAGE CHECK
-# -----------------------------
-def is_garbage(text):
-    if len(text) < 5:
-        return True
-    if sum(c.isdigit() for c in text) == 0 and len(text) < 15:
-        return True
-    return False
-
-
-# -----------------------------
-# 🔹 PROMPT (BALANCED 🔥)
+# 🔹 PROMPT
 # -----------------------------
 def build_prompt(qid, text, dtype):
-
     return f"""
-You are an SSC-level math solver.
+Solve SSC exam question.
 
-Input may have OCR errors:
+Fix OCR errors if needed:
 - 1 4 → 1.4
 - 3.4 → 3:4 (if ratio)
-- missing words
-
-Understand using context.
 
 Rules:
-- Do NOT assume blindly
 - salary ≠ partner
-- solve even if slightly messy
-- options are optional (support only)
+- do NOT assume blindly
+- use context
+- options optional
 
-Detected type: {dtype}
+TYPE: {dtype}
 
-Output:
+QID: {qid}
+{text}
+
+Return ONLY:
 
 QID: {qid}
 ANS: <answer>
 TYPE: {dtype}
 CONF: <0-1>
-
-No explanation.
 """
 
 
 # -----------------------------
-# 🔹 GPT TEXT
+# 🔹 GPT CALL (FIXED 🔥)
 # -----------------------------
 def solve_text_gpt(prompt):
     try:
@@ -152,14 +117,17 @@ def solve_text_gpt(prompt):
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
+            timeout=20
         )
         return res.choices[0].message.content
-    except:
+
+    except Exception as e:
+        print("🔥 GPT ERROR:", str(e))
         return "ERROR"
 
 
 # -----------------------------
-# 🔹 GPT IMAGE
+# 🔹 IMAGE GPT
 # -----------------------------
 def solve_image_gpt(qid, image_bytes):
     try:
@@ -167,21 +135,19 @@ def solve_image_gpt(qid, image_bytes):
 
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": f"QID: {qid} Solve"},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-                        }
-                    ],
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"QID: {qid} solve"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                ]
+            }]
         )
+
         return res.choices[0].message.content
-    except:
+
+    except Exception as e:
+        print("🔥 IMAGE GPT ERROR:", str(e))
         return "ERROR"
 
 
@@ -202,25 +168,10 @@ def parse_output(raw, qid):
             "TYPE": data.get("TYPE", "UNKNOWN"),
             "CONF": float(data.get("CONF", 0.5))
         }
-    except:
+
+    except Exception as e:
+        print("🔥 PARSE ERROR:", e)
         return {"QID": qid, "ANS": "ERROR", "TYPE": "UNKNOWN", "CONF": 0.0}
-
-
-# -----------------------------
-# 🔹 POST VALIDATION
-# -----------------------------
-def post_validate(result, text):
-
-    t = text.lower()
-
-    # salary safety
-    if "salary" in t and "partner" not in t:
-        result["CONF"] = max(result["CONF"] - 0.15, 0.1)
-
-    if result["ANS"] == "UNKNOWN":
-        result["CONF"] = min(result["CONF"], 0.3)
-
-    return result
 
 
 # -----------------------------
@@ -235,19 +186,9 @@ def solve(qid, content, is_image=False):
 
     else:
         content = clean_text(content)
-
-        if is_garbage(content):
-            return {
-                "QID": qid,
-                "ANS": "UNKNOWN",
-                "TYPE": "GARBAGE",
-                "CONF": 0.1
-            }
-
         content = fix_ocr_numbers(content)
 
         dtype = detect_type(content)
-        dtype = force_override_type(dtype, content)
 
         prompt = build_prompt(qid, content, dtype)
 
@@ -256,11 +197,7 @@ def solve(qid, content, is_image=False):
     if raw == "ERROR":
         return {"QID": qid, "ANS": "ERROR", "TYPE": "UNKNOWN", "CONF": 0.0}
 
-    parsed = parse_output(raw, qid)
-
-    parsed = post_validate(parsed, content if not is_image else "")
-
-    return parsed
+    return parse_output(raw, qid)
 
 
 # -----------------------------
@@ -284,4 +221,4 @@ async def test_ocr(qid: str = Form(...), text: str = Form(...)):
 
 @app.get("/")
 def home():
-    return {"status": "running 🚀"}
+    return {"status": "running 🔥"}
