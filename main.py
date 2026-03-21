@@ -17,7 +17,7 @@ Hosted on Render:
 import os, sys, json, re, base64, requests
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from openai import OpenAI
 import uvicorn
 
@@ -61,6 +61,15 @@ client = OpenAI(api_key=API_KEY)
 class TextRequest(BaseModel):
     qid : str = "auto"
     text: str
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def clean_text(cls, v):
+        v = str(v)
+        v = v.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        v = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', v)
+        v = re.sub(r' {2,}', ' ', v).strip()
+        return v
 
     class Config:
         json_schema_extra = {
