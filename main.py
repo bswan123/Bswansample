@@ -1,224 +1,173 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import os, re, base64
+import os
+import base64
 from openai import OpenAI
+import json
+from datetime import datetime
 
-app = FastAPI()
+app = FastAPI(title="SSC Messy OCR + Image Solver")
 
-# 🔥 SAFE CLIENT INIT
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# -----------------------------
-# 🔹 MODEL
-# -----------------------------
+if not client.api_key:
+    raise ValueError("OPENAI_API_KEY missing in .env")
+
 class TextRequest(BaseModel):
-    qid: str
+    qid: str = "loose"
     text: str
 
+# ────────────────────────────────────────────────
+#          POWERFUL SHARED SYSTEM PROMPT
+# ────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are an expert at solving SSC / competitive exam questions from extremely bad OCR text or low-quality photos.
 
-# -----------------------------
-# 🔹 CLEAN QID
-# -----------------------------
-def clean_qid(qid):
-    try:
-        qid = str(qid)
-        m = re.search(r'\d+', qid)
-        return "Q" + m.group() if m else qid.strip()
-    except:
-        return "Q0"
+You will get very messy, damaged, shorthand input like:
+- "gih invest 1 5 lacs salary 5000 profit 1 4 lacs"
+- "34,54,23;;43,56,76,23"
+- "1,-4,8;2,6,14"
+- "tsd s=32 d=4 t=?"
+- broken words, missing spaces, wrong dots/commas
 
+Your tasks:
+1. Intelligently fix OCR mistakes:
+   - 1 4 lacs → 1.4 lakhs
+   - 3 4 → 3:4 (when looks like ratio)
+   - ig→big, gih→big, pr→profit, slry→salary, etc.
+   - ignore repeated letters, extra symbols
 
-# -----------------------------
-# 🔹 CLEAN TEXT
-# -----------------------------
-def clean_text(text):
-    text = text.replace(";;", " ## ")
-    text = text.replace("|", " ")
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+2. Understand context automatically:
+   - invest + profit → partnership / profit sharing
+   - salary different from investment → different treatment
+   - numbers before ;; and after → question + options
+   - a,b;c,d;e,f → likely quadratic equations to compare roots
+   - tsd, s=, d=, t=? → time speed distance
+   - % sign → percentage
+   - train, platform, relative speed → train problems
 
+3. ALWAYS try to give an answer — even if 50% sure.
+   - If completely garbage → TYPE: "GARBAGE"
 
-# -----------------------------
-# 🔹 OCR FIX
-# -----------------------------
-def fix_ocr_numbers(text):
-    text = re.sub(r'(\d)\s+(\d)', r'\1.\2', text)
+4. For images: it's probably a handwritten or printed math question / sum / word problem.
 
-    if "ratio" in text.lower():
-        text = re.sub(r'(\d)\.(\d)', r'\1:\2', text)
-
-    return text
-
-
-# -----------------------------
-# 🔹 TYPE DETECTION (FIXED)
-# -----------------------------
-def detect_type(text):
-
-    t = text.lower()
-
-    if any(x in t for x in ["invest", "profit", "salary", "share"]):
-        return "PARTNERSHIP"
-
-    if "ratio" in t:
-        return "RATIO"
-
-    if any(x in t for x in ["train", "speed", "distance", "km"]):
-        return "TIME_WORK"
-
-    if "%" in t:
-        return "PERCENTAGE"
-
-    # STRICT SERIES
-    numbers = re.findall(r'\d+', t)
-    if len(numbers) >= 4 and re.match(r'^[\d,\s;:\-]+$', t.strip()):
-        return "SERIES"
-
-    return "ARITHMETIC"
-
-
-# -----------------------------
-# 🔹 PROMPT
-# -----------------------------
-def build_prompt(qid, text, dtype):
-    return f"""
-Solve SSC exam question.
-
-Fix OCR errors if needed:
-- 1 4 → 1.4
-- 3.4 → 3:4 (if ratio)
-
-Rules:
-- salary ≠ partner
-- do NOT assume blindly
-- use context
-- options optional
-
-TYPE: {dtype}
-
-QID: {qid}
-{text}
-
-Return ONLY:
-
-QID: {qid}
-ANS: <answer>
-TYPE: {dtype}
-CONF: <0-1>
+Return **ONLY** valid JSON, nothing else (no explanation outside, no ```json):
+{
+  "QID": "the qid user sent or loose",
+  "ANS": "final answer as string — can be number, fraction, option letter, short sentence",
+  "TYPE": "one of: PARTNERSHIP, RATIO, SERIES_MATCH, QUADRATIC_COMPARE, TIME_SPEED_DISTANCE, PERCENTAGE, PROFIT_LOSS, OTHER_MATH, GARBAGE, UNKNOWN",
+  "CONF": 0.1 to 0.99 — your real confidence,
+  "UNDERSTOOD_AS": "1-2 line what question you think it is (for debug)",
+  "SOLUTION_STEPS": "very short steps how you reached answer (for debug)"
+}
 """
 
-
-# -----------------------------
-# 🔹 GPT CALL (FIXED 🔥)
-# -----------------------------
-def solve_text_gpt(prompt):
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            timeout=20
-        )
-        return res.choices[0].message.content
-
-    except Exception as e:
-        print("🔥 GPT ERROR:", str(e))
-        return "ERROR"
-
-
-# -----------------------------
-# 🔹 IMAGE GPT
-# -----------------------------
-def solve_image_gpt(qid, image_bytes):
-    try:
-        b64 = base64.b64encode(image_bytes).decode()
-
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": f"QID: {qid} solve"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                ]
-            }]
-        )
-
-        return res.choices[0].message.content
-
-    except Exception as e:
-        print("🔥 IMAGE GPT ERROR:", str(e))
-        return "ERROR"
-
-
-# -----------------------------
-# 🔹 PARSER
-# -----------------------------
-def parse_output(raw, qid):
-    try:
-        data = {}
-        for line in raw.split("\n"):
-            if ":" in line:
-                k, v = line.split(":", 1)
-                data[k.strip()] = v.strip()
-
-        return {
-            "QID": data.get("QID", qid),
-            "ANS": data.get("ANS", "UNKNOWN"),
-            "TYPE": data.get("TYPE", "UNKNOWN"),
-            "CONF": float(data.get("CONF", 0.5))
-        }
-
-    except Exception as e:
-        print("🔥 PARSE ERROR:", e)
-        return {"QID": qid, "ANS": "ERROR", "TYPE": "UNKNOWN", "CONF": 0.0}
-
-
-# -----------------------------
-# 🔹 MAIN SOLVER
-# -----------------------------
-def solve(qid, content, is_image=False):
-
-    qid = clean_qid(qid)
-
-    if is_image:
-        raw = solve_image_gpt(qid, content)
-
-    else:
-        content = clean_text(content)
-        content = fix_ocr_numbers(content)
-
-        dtype = detect_type(content)
-
-        prompt = build_prompt(qid, content, dtype)
-
-        raw = solve_text_gpt(prompt)
-
-    if raw == "ERROR":
-        return {"QID": qid, "ANS": "ERROR", "TYPE": "UNKNOWN", "CONF": 0.0}
-
-    return parse_output(raw, qid)
-
-
-# -----------------------------
-# 🔹 ENDPOINTS
-# -----------------------------
-@app.post("/solve-image")
-async def solve_image(qid: str = Form(...), file: UploadFile = File(...)):
-    img = await file.read()
-    return solve(qid, img, is_image=True)
-
-
+# ────────────────────────────────────────────────
+#                  TEXT ENDPOINT
+# ────────────────────────────────────────────────
 @app.post("/solve-text")
 async def solve_text(req: TextRequest):
-    return solve(req.qid, req.text)
+    try:
+        text_input = req.text.strip()
+        qid = req.qid.strip()
 
+        response = client.chat.completions.create(
+            model="gpt-4o",           # ← changed to 4o — mini bahut weak hai messy case mein
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"QID: {qid}\n\nRaw input (probably bad OCR):\n{text_input}"}
+            ],
+            max_tokens=450,
+            temperature=0.3
+        )
 
-@app.post("/test-ocr-text")
-async def test_ocr(qid: str = Form(...), text: str = Form(...)):
-    return solve(qid, text)
+        raw_answer = response.choices[0].message.content.strip()
 
+        # Console ke liye manual testing print
+        print("\n" + "═"*80)
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TEXT | QID: {qid}")
+        print("INPUT:\n" + text_input)
+        print("\nGPT RAW:\n" + raw_answer)
+        print("═"*80 + "\n")
 
-@app.get("/")
-def home():
-    return {"status": "running 🔥"}
+        try:
+            parsed = json.loads(raw_answer)
+            parsed["QID"] = qid  # force correct qid
+            return JSONResponse(content=parsed)
+        except:
+            return JSONResponse(
+                content={
+                    "QID": qid,
+                    "ANS": "PARSE_FAIL",
+                    "TYPE": "GARBAGE",
+                    "CONF": 0.0,
+                    "UNDERSTOOD_AS": "GPT output was not valid JSON",
+                    "SOLUTION_STEPS": raw_answer[:400]
+                },
+                status_code=422
+            )
+
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+# ────────────────────────────────────────────────
+#                 IMAGE ENDPOINT
+# ────────────────────────────────────────────────
+@app.post("/solve-image")
+async def solve_image(qid: str = Form("loose"), file: UploadFile = File(...)):
+    try:
+        image_bytes = await file.read()
+        base64_img = base64.b64encode(image_bytes).decode("utf-8")
+        mime = file.content_type or "image/jpeg"
+
+        response = client.chat.completions.create(
+            model="gpt-4o",           # vision ke liye 4o best hai
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"QID: {qid}\nThis is most likely an SSC math / reasoning question photo (possibly handwritten). Solve it."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64_img}"}}
+                    ]
+                }
+            ],
+            max_tokens=500,
+            temperature=0.25
+        )
+
+        raw_answer = response.choices[0].message.content.strip()
+
+        # Console print for manual check
+        print("\n" + "═"*80)
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] IMAGE | QID: {qid}")
+        print("GPT RAW:\n" + raw_answer)
+        print("═"*80 + "\n")
+
+        try:
+            parsed = json.loads(raw_answer)
+            parsed["QID"] = qid
+            return JSONResponse(content=parsed)
+        except:
+            return JSONResponse(
+                content={
+                    "QID": qid,
+                    "ANS": "PARSE_FAIL",
+                    "TYPE": "GARBAGE",
+                    "CONF": 0.0,
+                    "UNDERSTOOD_AS": "Invalid JSON from vision model",
+                    "SOLUTION_STEPS": raw_answer[:400]
+                },
+                status_code=422
+            )
+
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "time": datetime.now().isoformat()}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
