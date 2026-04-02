@@ -454,10 +454,8 @@ async def solve_text(
     mode = mode.strip().lower()
 
     if mode == "written":
-        # LoRa sends pipe-separated: "Q1: 2,4,12,?|Q2: 20,30,55,?"
-        # Convert to newlines so GPT reads naturally
-        if "|" in text:
-            text = text.replace("|", "\n")
+        # Text comes as raw OCR — newlines preserved in JSON
+        # No pipe conversion needed
         return call_gpt_written_text(qid, text)
     else:
         hint = detect_type_hint(text)
