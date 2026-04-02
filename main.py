@@ -204,6 +204,17 @@ ARITHMETIC — Word problems (TSD, age, ratio, profit/loss, SI/CI):
 - For series_wrong: ANS must be a number from the input series
 - If unreadable → ANS = "?"
 
+━━━ SPECIAL CASES ━━━
+PUZZLE text spread across Q1/Q2/Q3 entries:
+  If multiple "Q" entries look like one puzzle (mentions persons, seniority,
+  designations, floor, seating, row, etc.) → merge ALL entries as ONE puzzle.
+  Solve completely and return: {"Q1": ["Person1-Role1", "Person2-Role2", ...]}
+
+QUADRATIC equations split incorrectly (x equations in Q1-Q5, y in Q6):
+  If you see only x equations in Q1-Q5 and only y equations in Q6+,
+  pair them in order: Q1=(x from Q1, y from Q6), Q2=(x from Q2, y from Q7) etc.
+  Return roots for each pair: {"Q1": "x=val1,val2; y=val3,val4", ...}
+
 ━━━ OUTPUT — ONLY valid JSON, no markdown ━━━
 Example for 3 arithmetic questions:
 {
