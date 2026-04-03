@@ -185,12 +185,14 @@ SERIES_NEXT — "Find missing term" (has ? mark):
   ANS = the calculated number
 
 QUADRATIC — "Quadratic comparison" page:
-  Read: Q1: (I) x^2 + 8x + 16 = 0  (II) y^2 - 6y + 9 = 0
-  Solve BOTH equations completely
+  Equations may appear in two formats — handle BOTH:
+  Format A: Q1: (I) x^2+8x+16=0  (II) y^2-6y+9=0  (on one line)
+  Format B: Q1: x^2+8x+16=0       (x equation)
+             y^2-6y+9=0           (y equation on next line — pair with Q above it)
+  Solve BOTH equations for each question completely.
   ANS = "x=val1,val2; y=val3,val4"
   Example: "x=-4,-4; y=3,3"
-  IMPORTANT: Give actual roots, NOT option letters like a/b/c/d/e
-  User will compare roots themselves
+  IMPORTANT: Give actual roots, NOT option letters. User will compare themselves.
 
 ARITHMETIC — Word problems (TSD, age, ratio, profit/loss, SI/CI):
   Read ALL questions on the page
