@@ -157,6 +157,30 @@ YOUR JOB: Identify question type, solve correctly, return clean JSON.
 - If options present (A/B/C/D or after ;;) → match ANS to option
 - Unrecognisable → TYPE="GARBAGE", CONF=0.05, ANS="Cannot determine"
 
+8. WORD_LOGIC — Letter-based / word formation / position problems
+
+Types:
+- Pick letters from positions (1st, 5th, etc.)
+- Rearrange letters to form meaningful word
+- Coding-decoding (letter shifts)
+- Odd pair / letter analogy
+
+Examples:
+"First, fifth, sixth letters of SOCIALIZATION"
+"Find odd pair: A-C, D-F, E-G"
+"Arrange letters to form meaningful word"
+
+Method:
+- Extract required letters based on positions
+- Try forming valid English word(s)
+- If multiple valid words → return "Y"
+- If no valid word → return "X"
+- If asking odd pair → find pattern difference
+
+ANS:
+- Single letter OR option (A/B/C/D/E)
+- OR "X" / "Y" where specified
+
 ━━━ OUTPUT — ONLY valid JSON, no markdown ━━━
 {
   "QID": "as given",
