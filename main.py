@@ -1,53 +1,71 @@
 #!/usr/bin/env python3
 """
-EXAM SOLVER SERVER — v2.1
-==========================
-ENDPOINTS:
-  /solve-image  → RPi 5 ONLINE mode (screen or written page image)
-  /solve-text   → RPi Zero OFFLINE mode (LoRa OCR text)
-  /health       → status
+EXAM SOLVER SERVER — v3.0
+========================================
 
-IMAGE MODES (solve-image):
-  screen  → single question → ANS: "3400"
-  written → page with N questions → ANS: {"Q1":"3360","Q2":"105",...}
+FEATURES
+--------
+✔ gpt-5-mini → arithmetic/puzzle/series
+✔ gpt-5 → GK/current affairs/computer/banking
+✔ OCR cleanup
+✔ MCQ optimization
+✔ image + text solving
+✔ LoRa compatible
+✔ manual testing
+✔ auto tests
+✔ Adda247 compatible
 
-TEXT MODES (solve-text):
-  screen  → single OCR question → ANS: "3400"
-  written → multiline OCR text  → ANS: {"Q1":"3360","Q2":"105",...}
+ENDPOINTS
+---------
+/solve-image
+/solve-text
+/health
 
-RUN:
-  python server.py              → start server
-  python server.py --test       → auto tests
-  python server.py --manual     → interactive CLI
-  python server.py --testall    → auto + manual
+RUN
+---
+python server.py
+python server.py --test
+python server.py --manual
+python server.py --testall
 """
 
-import os, sys, json, re, base64, requests
+import os
+import re
+import sys
+import json
+import base64
+import requests
+
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
+
 from openai import OpenAI
+
 import uvicorn
+
 
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
+
 BASE_URL = "https://bswansample-1-h2uw.onrender.com"
-API_KEY  = os.environ.get("OPENAI_API_KEY", "")
-MODEL    = "gpt-4o"
+
+API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+FAST_MODEL = "gpt-5-mini"
+FACT_MODEL = "gpt-5"
+
+FACT_TYPES = {
+    "CURRENT_AFFAIRS",
+    "BANKING_AWARENESS",
+    "COMPUTER",
+    "STATIC_GK",
+    "GK"
+}
 
 app = FastAPI(
-    title="Exam Solver API v2.1",
-    description="""
-## Exam Solver — IBPS / SBI / RRB
-
-| Endpoint | Caller | Mode | ANS type |
-|----------|--------|------|----------|
-| `/solve-image` mode=screen  | RPi 5 ONLINE | single question image | string |
-| `/solve-image` mode=written | RPi 5 ONLINE | page with N questions | dict |
-| `/solve-text`  mode=screen  | RPi Zero OFFLINE | single OCR text | string |
-| `/solve-text`  mode=written | RPi Zero OFFLINE | multiline OCR text | dict |
-""",
-    version="2.1.0",
+    title="Exam Solver API v3.0",
+    version="3.0"
 )
 
 client = OpenAI(api_key=API_KEY)
@@ -61,363 +79,517 @@ def clean_qid(qid: str) -> str:
     try:
         qid = str(qid).strip()
         m = re.search(r'\d+', qid)
-        return "Q" + m.group() if m else (qid or "Q?")
-    except Exception:
-        return "Q?"
+        return "Q" + m.group() if m else "Q1"
+    except:
+        return "Q1"
 
 
 def clean_text(text: str) -> str:
+
     text = str(text)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    text = re.sub(r' {2,}', ' ', text).strip()
-    return text
+
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
+
+    # OCR cleanup
+    text = text.replace("0S", "OS")
+    text = text.replace("HTIP", "HTTP")
+    text = text.replace("RBl", "RBI")
+    text = text.replace("UP1", "UPI")
+
+    text = text.replace("prfit", "profit")
+    text = text.replace("invst", "invest")
+
+    text = re.sub(r'[\x00-\x1f\x7f]', '', text)
+    text = re.sub(r' {2,}', ' ', text)
+
+    return text.strip()
+
+
+def choose_model(hint: str) -> str:
+
+    if hint in FACT_TYPES:
+        return FACT_MODEL
+
+    return FAST_MODEL
+
+
+def get_max_tokens(hint: str):
+
+    if hint in FACT_TYPES:
+        return 140
+
+    if hint in [
+        "PUZZLE",
+        "ARITHMETIC"
+    ]:
+        return 400
+
+    return 250
 
 
 def detect_type_hint(text: str) -> str:
-    t = text.strip()
+
+    t = text.lower().strip()
+
+    # ─────────────────────────────
+    # QUADRATIC
+    # ─────────────────────────────
+
     if ";;" in t:
-        return "SERIES"
+        return "QUADRATIC"
+
     parts = t.split(";")
+
     if len(parts) == 2:
+
         l = re.findall(r"-?\d+\.?\d*", parts[0])
         r = re.findall(r"-?\d+\.?\d*", parts[1])
+
         if len(l) >= 3 and len(r) >= 3:
             return "QUADRATIC"
+
+    # ─────────────────────────────
+    # SERIES
+    # ─────────────────────────────
+
+    if "?" in t:
+
+        nums = re.findall(r'\d+', t)
+
+        if len(nums) >= 4:
+            return "SERIES"
+
+    # ─────────────────────────────
+    # PUZZLE
+    # ─────────────────────────────
+
+    puzzle_words = [
+        "sits",
+        "sitting",
+        "floor",
+        "north",
+        "south",
+        "circular",
+        "table",
+        "arrangement",
+        "row",
+        "box"
+    ]
+
+    if any(k in t for k in puzzle_words):
+        return "PUZZLE"
+
+    # ─────────────────────────────
+    # COMPUTER
+    # ─────────────────────────────
+
+    comp_keywords = [
+        "windows",
+        "excel",
+        "shortcut",
+        "cpu",
+        "ram",
+        "rom",
+        "browser",
+        "internet",
+        "software",
+        "hardware",
+        "operating system",
+        "microsoft",
+        "keyboard",
+        "https",
+        "http"
+    ]
+
+    if any(k in t for k in comp_keywords):
+        return "COMPUTER"
+
+    # ─────────────────────────────
+    # BANKING
+    # ─────────────────────────────
+
+    bank_keywords = [
+        "rbi",
+        "repo",
+        "slr",
+        "crr",
+        "neft",
+        "rtgs",
+        "upi",
+        "bank",
+        "ombudsman",
+        "committee",
+        "finance bank"
+    ]
+
+    if any(k in t for k in bank_keywords):
+        return "BANKING_AWARENESS"
+
+    # ─────────────────────────────
+    # STATIC GK
+    # ─────────────────────────────
+
+    gk_keywords = [
+        "capital",
+        "headquarter",
+        "author",
+        "book",
+        "census",
+        "isro",
+        "insurance company",
+        "india"
+    ]
+
+    if any(k in t for k in gk_keywords):
+        return "STATIC_GK"
+
+    # ─────────────────────────────
+    # ARITHMETIC
+    # ─────────────────────────────
+
+    arithmetic_words = [
+        "profit",
+        "loss",
+        "ratio",
+        "time",
+        "speed",
+        "distance",
+        "interest",
+        "work",
+        "partnership"
+    ]
+
+    if any(k in t for k in arithmetic_words):
+        return "ARITHMETIC"
+
     return "TEXT"
 
 
-def _next_qid(qid: str, offset: int) -> str:
-    digits = ''.join(filter(str.isdigit, qid))
-    return f"Q{int(digits) + offset}" if digits else f"Q{offset + 1}"
+def extract_json(text: str):
+
+    text = text.strip()
+
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
+
+    return json.loads(text)
 
 
 # ─────────────────────────────────────────────
 # SYSTEM PROMPTS
 # ─────────────────────────────────────────────
 
-SYSTEM_SINGLE = """You are an expert solver for Indian banking competitive exams (IBPS PO, SBI PO, RRB).
+SYSTEM_SINGLE = """
+You are an expert solver for Indian banking exams.
 
-Input comes from OCR of exam screen or handwritten page. May have minor OCR errors.
+You solve:
+- Arithmetic
+- Puzzle
+- Seating arrangement
+- Series
+- Quadratic
+- Computer awareness
+- Banking awareness
+- Current affairs
+- Static GK
 
-YOUR JOB: Identify question type, solve correctly, return clean JSON.
+RULES:
+- Always answer
+- Never refuse
+- OCR may contain mistakes
+- Read MCQ options carefully
 
-━━━ OCR ERRORS TO FIX ━━━
-- "1 5 lacs" = 1.5 lacs | "3 4" = 3:4 | "x 2" = x²
-- "prfit"=profit, "invst"=invest, "gih"=Gita
+MCQ OPTIMIZATION:
+- Prefer exact option text
+- Prefer exact option meaning
+- Avoid unnecessary explanation
 
-━━━ QUESTION TYPES & HOW TO SOLVE ━━━
+OUTPUT:
+Return ONLY valid JSON.
 
-1. SERIES_NEXT — Find missing term (marked with ?)
-   Input:  "2, 4, 12, 60, 420, ?"
-   Method: Find pattern → calculate next/missing term
-   ANS:    The missing number
-
-2. SERIES_WRONG — Find wrong number in series
-   Input:  "Find wrong number: 15, 18, 42, 125, 506, 2537"
-            or "15, 18, 42, 125, 506, 2537" with header "find wrong number"
-   Method: Find pattern → identify which term breaks it
-   ANS:    The wrong number (must be one already in the series)
-   IMPORTANT: Do NOT calculate a new number. Pick the wrong one FROM the series.
-
-3. QUADRATIC — Compare roots of two equations
-   Input format 1: "(I) x²-6x-112=0  (II) y²+3y-40=0"
-   Input format 2: "1,-6,-112;;1,3,-40" (a,b,c;;d,e,f)
-   Method: Solve both equations → compare all root combinations
-   ANS:    ONE of these exact options:
-           "a" = x > y
-           "b" = x < y  
-           "c" = x >= y
-           "d" = x <= y
-           "e" = x = y or relation cannot be established
-   IMPORTANT: ANS must be exactly one letter: a, b, c, d, or e
-
-4. ARITHMETIC — Word problems
-   Covers: percentage, profit/loss, SI/CI, TSD, ratio, time&work, mensuration
-   ANS: The calculated value with unit if needed
-
-5. PARTNERSHIP — Invest + profit, working partner salary
-   ANS: Each person's share or asked value
-
-6. PUZZLE/ARRANGEMENT — Seating, floor, box, row, circular table
-   Method: Build complete arrangement from all clues
-   ANS: A list of strings, one per person/position
-   Format: ["Person1 - Position1", "Person2 - Position2", ...]
-   Example: ["S - CLO", "U - CIO", "V - CEO", "T - CTO", "W - CFO"]
-   IMPORTANT: ANS must be a JSON array of strings, not a paragraph
-
-7. IMAGE — Question visible in image
-   ANS: Solved answer
-
-━━━ RULES ━━━
-- NEVER refuse. Always attempt.
-- For SERIES_WRONG: answer MUST be a number already present in the input series
-- For QUADRATIC: answer MUST be exactly one letter (a/b/c/d/e)
-- For PUZZLE: answer MUST be a JSON array of strings
-- If options present (A/B/C/D or after ;;) → match ANS to option
-- Unrecognisable → TYPE="GARBAGE", CONF=0.05, ANS="Cannot determine"
-
-8. WORD_LOGIC — Letter-based / word formation / position problems
-
-Types:
-- Pick letters from positions (1st, 5th, etc.)
-- Rearrange letters to form meaningful word
-- Coding-decoding (letter shifts)
-- Odd pair / letter analogy
-
-Examples:
-"First, fifth, sixth letters of SOCIALIZATION"
-"Find odd pair: A-C, D-F, E-G"
-"Arrange letters to form meaningful word"
-
-Method:
-- Extract required letters based on positions
-- Try forming valid English word(s)
-- If multiple valid words → return "Y"
-- If no valid word → return "X"
-- If asking odd pair → find pattern difference
-
-ANS:
-- Single letter OR option (A/B/C/D/E)
-- OR "X" / "Y" where specified
-
-━━━ OUTPUT — ONLY valid JSON, no markdown ━━━
 {
-  "QID": "as given",
-  "ANS": "answer — string, letter, or array for puzzles",
-  "TYPE": "SERIES_NEXT|SERIES_WRONG|QUADRATIC|ARITHMETIC|PARTNERSHIP|PUZZLE|IMAGE|GARBAGE|OTHER",
-  "CONF": 0.85,
-  "STEPS": "1-2 line working"
-}"""
-
-
-SYSTEM_WRITTEN = """You are an expert solver for Indian banking competitive exams (IBPS PO, SBI PO, RRB).
-
-You will receive text from a handwritten page with MULTIPLE questions.
-Read the page header carefully — it tells you the question type.
-
-━━━ QUESTION TYPES & HOW TO SOLVE ━━━
-
-SERIES_WRONG — "Find wrong number in series":
-  Read: Q1: 15, 18, 42, 125, 506, 2537
-  Find pattern → identify the ONE wrong number
-  ANS = that wrong number (must already be in the series)
-
-SERIES_NEXT — "Find missing term" (has ? mark):
-  Read: Q1: 2, 4, 12, 60, 420, ?
-  Find pattern → calculate missing/next term
-  ANS = the calculated number
-
-QUADRATIC — "Quadratic comparison" page:
-  Equations may appear in two formats — handle BOTH:
-  Format A: Q1: (I) x^2+8x+16=0  (II) y^2-6y+9=0  (on one line)
-  Format B: Q1: x^2+8x+16=0       (x equation)
-             y^2-6y+9=0           (y equation on next line — pair with Q above it)
-  Solve BOTH equations for each question completely.
-  ANS = "x=val1,val2; y=val3,val4"
-  Example: "x=-4,-4; y=3,3"
-  IMPORTANT: Give actual roots, NOT option letters. User will compare themselves.
-
-ARITHMETIC — Word problems (TSD, age, ratio, profit/loss, SI/CI):
-  Read ALL questions on the page
-  Solve EACH one separately and completely
-  ANS = final numerical answer with unit if applicable
-
-━━━ CRITICAL RULES ━━━
-- Solve EVERY question on the page — do not skip any
-- Return ALL answers in the JSON dict — one entry per question
-- For quadratic: ANS must be actual roots like "x=-4,-4; y=3,3"
-- For series_wrong: ANS must be a number from the input series
-- If unreadable → ANS = "?"
-
-━━━ SPECIAL CASES ━━━
-PUZZLE text spread across Q1/Q2/Q3 entries:
-  If multiple "Q" entries look like one puzzle (mentions persons, seniority,
-  designations, floor, seating, row, etc.) → merge ALL entries as ONE puzzle.
-  Solve completely and return: {"Q1": ["Person1-Role1", "Person2-Role2", ...]}
-
-QUADRATIC equations split incorrectly (x equations in Q1-Q5, y in Q6):
-  If you see only x equations in Q1-Q5 and only y equations in Q6+,
-  pair them in order: Q1=(x from Q1, y from Q6), Q2=(x from Q2, y from Q7) etc.
-  Return roots for each pair: {"Q1": "x=val1,val2; y=val3,val4", ...}
-
-━━━ OUTPUT — ONLY valid JSON, no markdown ━━━
-Example for 3 arithmetic questions:
-{
-  "QID": "PAGE",
-  "ANS": {
-    "Q1": "360 m",
-    "Q2": "20 years",
-    "Q3": "Rs.4060"
-  },
-  "TYPE": "WRITTEN_PAGE",
-  "CONF": 0.88,
-  "STEPS": "Q1: speed=40m/s...; Q2: ...; Q3: ..."
+  "QID":"Q1",
+  "ANS":"answer",
+  "TYPE":"TYPE",
+  "CONF":0.90,
+  "STEPS":"short reasoning"
 }
+"""
 
-Example for 5 quadratic questions:
+
+SYSTEM_WRITTEN = """
+You are an expert banking exam solver.
+
+You receive OCR text from a handwritten or printed page containing multiple questions.
+
+Solve ALL questions.
+
+Return ONLY valid JSON.
+
 {
-  "QID": "PAGE",
-  "ANS": {
-    "Q1": "x=-4,-4; y=3,3",
-    "Q2": "x=14,-8; y=-8,5",
-    "Q3": "x=18,-14; y=8,-6",
-    "Q4": "x=4,-6.5; y=2.5,-9",
-    "Q5": "x=-2/7,-4; y=1/3,4/9"
+  "QID":"PAGE",
+  "ANS":{
+    "Q1":"...",
+    "Q2":"..."
   },
-  "TYPE": "WRITTEN_PAGE",
-  "CONF": 0.90,
-  "STEPS": "Q1: (x+4)^2=0 x=-4; Q2: ..."
-}"""
+  "TYPE":"WRITTEN_PAGE",
+  "CONF":0.88,
+  "STEPS":"short"
+}
+"""
 
 
-SYSTEM_WRITTEN_IMAGE = """You are an expert solver for Indian banking competitive exams (IBPS PO, SBI PO, RRB).
+SYSTEM_WRITTEN_IMAGE = """
+You are an expert banking exam solver.
 
-You will receive a photo of a handwritten or printed exam question page.
-The page contains MULTIPLE questions — typically 5, but could be more or fewer.
+You receive an IMAGE containing multiple questions.
 
-YOUR JOB:
-1. Read every question from the page carefully
-2. Identify question numbers (Q1, Q2... or 1. 2. or circled numbers)
-3. Solve each question independently
-4. Return ALL answers in one JSON
+Read all questions carefully.
+Solve all questions.
 
-━━━ COMMON TYPES ON WRITTEN PAGES ━━━
-- Number series: find missing/next term
-- Arithmetic: SI/CI, ratio, percentage, profit/loss
-- Quadratic equations
+Return ONLY JSON.
 
-━━━ RULES ━━━
-- Use question numbers visible on page
-- If not visible, use starting_qid provided and increment
-- If a question is unreadable → ANS for that QID = "?"
-
-━━━ OUTPUT — ONLY valid JSON, no markdown, no explanation ━━━
 {
-  "QID": "PAGE",
-  "ANS": {
-    "Q1": "3360",
-    "Q2": "105",
-    "Q3": "94",
-    "Q4": "26",
-    "Q5": "83"
+  "QID":"PAGE",
+  "ANS":{
+    "Q1":"...",
+    "Q2":"..."
   },
-  "TYPE": "WRITTEN_PAGE",
-  "CONF": 0.88,
-  "STEPS": "Q1: pattern...; Q2: diff..."
-}"""
+  "TYPE":"WRITTEN_PAGE",
+  "CONF":0.88,
+  "STEPS":"short"
+}
+"""
 
 
 # ─────────────────────────────────────────────
 # GPT CALLS
 # ─────────────────────────────────────────────
 
-def call_gpt_single_text(qid: str, raw: str, hint: str = "") -> dict:
-    """Single question text → single answer."""
-    user_msg = f"QID: {qid}\n"
-    if hint and hint != "TEXT":
-        user_msg += f"[Hint: {hint}]\n"
-    user_msg += f"\n{raw}"
+def call_gpt_single_text(
+    qid: str,
+    raw: str,
+    hint: str = ""
+):
 
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_SINGLE},
-            {"role": "user",   "content": user_msg}
+    model = choose_model(hint)
+
+    user_msg = f"""
+QID: {qid}
+
+DetectedType: {hint}
+
+Question:
+{raw}
+
+Return JSON only.
+"""
+
+    resp = client.responses.create(
+        model=model,
+        input=[
+            {
+                "role": "system",
+                "content": SYSTEM_SINGLE
+            },
+            {
+                "role": "user",
+                "content": user_msg
+            }
         ],
-        temperature=0.2,
-        max_tokens=400,
-        response_format={"type": "json_object"}
+        max_output_tokens=get_max_tokens(hint)
     )
-    result = json.loads(resp.choices[0].message.content)
-    result["QID"] = clean_qid(result.get("QID", qid))
+
+    txt = resp.output_text.strip()
+
+    try:
+
+        result = extract_json(txt)
+
+    except:
+
+        result = {
+            "QID": qid,
+            "ANS": txt[:200],
+            "TYPE": hint or "OTHER",
+            "CONF": 0.50,
+            "STEPS": ""
+        }
+
+    result["QID"] = clean_qid(
+        result.get("QID", qid)
+    )
+
+    result["RAW_TEXT"] = raw[:300]
+
     return result
 
 
-def call_gpt_written_text(starting_qid: str, raw: str) -> dict:
-    """
-    Multiline OCR text from written page → dict of answers.
+def call_gpt_written_text(
+    starting_qid: str,
+    raw: str
+):
 
-    raw looks like:
-      Q1: 2, 4, 12, 60, 420, ?
-      Q2: 20, 30, 55, ?, 310
-      ...
-    """
-    user_msg = (
-        f"Starting QID if not visible: {starting_qid}\n\n"
-        f"OCR text from written page:\n{raw}"
-    )
+    resp = client.responses.create(
+        model=FAST_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": SYSTEM_WRITTEN
+            },
+            {
+                "role": "user",
+                "content": f"""
+Starting QID:
+{starting_qid}
 
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_WRITTEN},
-            {"role": "user",   "content": user_msg}
+OCR TEXT:
+{raw}
+
+Return JSON only.
+"""
+            }
         ],
-        temperature=0.2,
-        max_tokens=600,
-        response_format={"type": "json_object"}
+        max_output_tokens=700
     )
-    result = json.loads(resp.choices[0].message.content)
-    result["QID"] = starting_qid
 
-    # Ensure ANS is always a dict
-    if not isinstance(result.get("ANS"), dict):
-        result["ANS"] = {starting_qid: str(result.get("ANS", "?"))}
+    txt = resp.output_text.strip()
+
+    try:
+
+        result = extract_json(txt)
+
+    except:
+
+        result = {
+            "QID": starting_qid,
+            "ANS": {
+                starting_qid: txt[:200]
+            },
+            "TYPE": "WRITTEN_PAGE",
+            "CONF": 0.40,
+            "STEPS": ""
+        }
 
     return result
 
 
-def call_gpt_screen_image(qid: str, img_bytes: bytes, mime: str = "image/jpeg") -> dict:
-    """Single screen question image → single answer."""
+def call_gpt_screen_image(
+    qid: str,
+    img_bytes: bytes,
+    mime: str = "image/jpeg"
+):
+
     b64 = base64.b64encode(img_bytes).decode()
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_SINGLE},
-            {"role": "user", "content": [
-                {"type": "image_url",
-                 "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"}},
-                {"type": "text",
-                 "text": f"QID: {qid}\nPhoto of bank exam question on computer screen. Solve it. Return JSON only."}
-            ]}
+
+    resp = client.responses.create(
+        model=FACT_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": SYSTEM_SINGLE
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": f"""
+QID: {qid}
+
+Read screenshot carefully.
+Solve question.
+Return JSON only.
+"""
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:{mime};base64,{b64}"
+                    }
+                ]
+            }
         ],
-        temperature=0.2,
-        max_tokens=500,
-        response_format={"type": "json_object"}
+        max_output_tokens=300
     )
-    result = json.loads(resp.choices[0].message.content)
-    result["QID"] = clean_qid(result.get("QID", qid))
+
+    txt = resp.output_text.strip()
+
+    try:
+
+        result = extract_json(txt)
+
+    except:
+
+        result = {
+            "QID": qid,
+            "ANS": txt[:200],
+            "TYPE": "IMAGE",
+            "CONF": 0.50,
+            "STEPS": ""
+        }
+
     return result
 
 
-def call_gpt_written_image(starting_qid: str, img_bytes: bytes, mime: str = "image/jpeg") -> dict:
-    """Written page photo → dict of N answers."""
+def call_gpt_written_image(
+    starting_qid: str,
+    img_bytes: bytes,
+    mime: str = "image/jpeg"
+):
+
     b64 = base64.b64encode(img_bytes).decode()
 
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_WRITTEN_IMAGE},
-            {"role": "user", "content": [
-                {"type": "image_url",
-                 "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"}},
-                {"type": "text",
-                 "text": (
-                     f"Starting QID if not visible on page: {starting_qid}\n"
-                     f"Read all questions from page, solve all, return JSON with ANS as dict."
-                 )}
-            ]}
-        ],
-        temperature=0.2,
-        max_tokens=900,
-        response_format={"type": "json_object"}
-    )
-    result = json.loads(resp.choices[0].message.content)
-    result["QID"] = starting_qid
+    resp = client.responses.create(
+        model=FAST_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": SYSTEM_WRITTEN_IMAGE
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": f"""
+Starting QID:
+{starting_qid}
 
-    if not isinstance(result.get("ANS"), dict):
-        result["ANS"] = {starting_qid: str(result.get("ANS", "?"))}
+Solve ALL questions.
+Return JSON only.
+"""
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:{mime};base64,{b64}"
+                    }
+                ]
+            }
+        ],
+        max_output_tokens=900
+    )
+
+    txt = resp.output_text.strip()
+
+    try:
+
+        result = extract_json(txt)
+
+    except:
+
+        result = {
+            "QID": starting_qid,
+            "ANS": {
+                starting_qid: txt[:300]
+            },
+            "TYPE": "WRITTEN_PAGE",
+            "CONF": 0.40,
+            "STEPS": ""
+        }
 
     return result
 
@@ -426,89 +598,90 @@ def call_gpt_written_image(starting_qid: str, img_bytes: bytes, mime: str = "ima
 # ROUTES
 # ─────────────────────────────────────────────
 
-@app.get("/health", tags=["Status"], summary="Health check")
+@app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL, "version": "2.1"}
+
+    return {
+        "status": "ok",
+        "fast_model": FAST_MODEL,
+        "fact_model": FACT_MODEL,
+        "version": "3.0"
+    }
 
 
-@app.post(
-    "/solve-image",
-    tags=["Solver"],
-    summary="ONLINE — Image from RPi 5 (screen or written page)",
-)
+@app.post("/solve-image")
 async def solve_image(
-    qid  : str        = Form(default="Q1",     description="QID e.g. Q1 (written: starting QID)"),
-    mode : str        = Form(default="screen", description="screen = single question | written = page with N questions"),
-    image: UploadFile = File(...,              description="Camera photo of screen or written page"),
+
+    qid: str = Form(default="Q1"),
+    mode: str = Form(default="screen"),
+    image: UploadFile = File(...)
+
 ):
-    """
-    Called by `uploader.py` on RPi 5 in ONLINE mode.
 
-    **mode=screen** → single question:
-    ```json
-    {"QID":"Q1", "ANS":"3400", "TYPE":"ARITHMETIC", "CONF":0.9, "STEPS":"..."}
-    ```
-
-    **mode=written** → N questions on page:
-    ```json
-    {"QID":"Q1", "ANS":{"Q1":"3360","Q2":"105","Q3":"94","Q4":"26","Q5":"83"}, "TYPE":"WRITTEN_PAGE", "CONF":0.88, "STEPS":"..."}
-    ```
-    """
     img_bytes = await image.read()
+
     if not img_bytes:
-        return JSONResponse({"error": "empty image"}, status_code=400)
+        return JSONResponse(
+            {"error": "empty image"},
+            status_code=400
+        )
 
     mime = image.content_type or "image/jpeg"
-    qid  = clean_qid(qid)
+
+    qid = clean_qid(qid)
+
     mode = mode.strip().lower()
 
     if mode == "written":
-        return call_gpt_written_image(qid, img_bytes, mime)
-    else:
-        return call_gpt_screen_image(qid, img_bytes, mime)
+        return call_gpt_written_image(
+            qid,
+            img_bytes,
+            mime
+        )
+
+    return call_gpt_screen_image(
+        qid,
+        img_bytes,
+        mime
+    )
 
 
-@app.post(
-    "/solve-text",
-    tags=["Solver"],
-    summary="OFFLINE — LoRa OCR text via RPi Zero",
-)
+@app.post("/solve-text")
 async def solve_text(
-    qid : str = Form(default="Q1",     description="QID or starting QID for written mode"),
-    text: str = Form(...,              description="OCR text — single question or multiline written page"),
-    mode: str = Form(default="screen", description="screen = single question | written = multiline OCR"),
+
+    qid: str = Form(default="Q1"),
+    text: str = Form(...),
+    mode: str = Form(default="screen")
+
 ):
-    """
-    Called by RPi Zero after receiving OCR text via LoRa from RPi 5.
 
-    **mode=screen** → single question text:
-    ```json
-    {"QID":"Q1", "ANS":"3400", "TYPE":"ARITHMETIC", "CONF":0.9, "STEPS":"..."}
-    ```
-
-    **mode=written** → multiline OCR from written page:
-    ```
-    text = "Q1: 2, 4, 12, 60, 420, ?\\nQ2: 20, 30, 55, ?, 310\\n..."
-    ```
-    Returns:
-    ```json
-    {"QID":"Q1", "ANS":{"Q1":"3360","Q2":"105",...}, "TYPE":"WRITTEN_PAGE", "CONF":0.88, "STEPS":"..."}
-    ```
-    """
     text = clean_text(text)
-    if not text:
-        return JSONResponse({"error": "empty text"}, status_code=400)
 
-    qid  = clean_qid(qid)
+    if not text:
+
+        return JSONResponse(
+            {"error": "empty text"},
+            status_code=400
+        )
+
+    qid = clean_qid(qid)
+
     mode = mode.strip().lower()
 
     if mode == "written":
-        # Text comes as raw OCR — newlines preserved in JSON
-        # No pipe conversion needed
-        return call_gpt_written_text(qid, text)
-    else:
-        hint = detect_type_hint(text)
-        return call_gpt_single_text(qid, text, hint)
+
+        return call_gpt_written_text(
+            qid,
+            text
+        )
+
+    hint = detect_type_hint(text)
+
+    return call_gpt_single_text(
+        qid,
+        text,
+        hint
+    )
 
 
 # ─────────────────────────────────────────────
@@ -516,354 +689,282 @@ async def solve_text(
 # ─────────────────────────────────────────────
 
 AUTO_TESTS = [
-    # (name, endpoint, qid, mode, payload, expected_keywords)
 
-    ("Health check",
-     "health", None, None, None,
-     ["ok"]),
+    (
+        "Health",
+        "health",
+        None,
+        None,
+        None,
+        ["ok"]
+    ),
 
-    ("Series — 2,4,12,60,420,?  (expect 3360)",
-     "text", "Q1", "screen", "2,4,12,60,420,?",
-     ["3360"]),
+    (
+        "Series",
+        "text",
+        "Q1",
+        "screen",
+        "2,4,12,60,420,?",
+        ["3360"]
+    ),
 
-    ("Series — 20,30,55,?,310",
-     "text", "Q2", "screen", "20,30,55,?,310",
-     ["105", "SERIES"]),
+    (
+        "Computer",
+        "text",
+        "Q2",
+        "screen",
+        "Which Windows shortcut opens run dialog?",
+        ["windows", "r"]
+    ),
 
-    ("Series — 17,18,38,?,472,2365",
-     "text", "Q3", "screen", "17,18,38,?,472,2365",
-     ["SERIES"]),
+    (
+        "Banking",
+        "text",
+        "Q3",
+        "screen",
+        "Which committee formed basis of small finance banks?",
+        ["nachiket"]
+    ),
 
-    ("Series — 11,12,16,?,41,66",
-     "text", "Q4", "screen", "11,12,16,?,41,66",
-     ["26", "SERIES"]),
-
-    ("Series — 2,5,12,27,54,?",
-     "text", "Q5", "screen", "2,5,12,27,54,?",
-     ["SERIES"]),
-
-    ("Written page — 5 series questions at once",
-     "text", "Q1", "written",
-     "Q1: 2, 4, 12, 60, 420, ?\nQ2: 20, 30, 55, ?, 310\nQ3: 17, 18, 38, ?, 472, 2365\nQ4: 11, 12, 16, ?, 41, 66\nQ5: 2, 5, 12, 27, 54, ?",
-     ["Q1", "Q2", "Q3", "Q4", "Q5", "WRITTEN_PAGE"]),
-
-    ("Arithmetic — Partnership messy OCR",
-     "text", "Q6", "screen",
-     "gih invest 1 5 lacs salary 5000 prfit 1 4 lacs find each share",
-     ["PARTNERSHIP"]),
-
-    ("Arithmetic — TSD",
-     "text", "Q7", "screen", "tsd s=60km/hr d=150km t=?",
-     ["2.5", "2", "hours", "hr"]),
-
-    ("Arithmetic — Simple Interest",
-     "text", "Q8", "screen", "si p=5000 r=10 t=3 find interest",
-     ["1500"]),
-
-    ("Quadratic roots",
-     "text", "Q9", "screen", "1,-5,6;1,-4,4",
-     ["QUADRATIC", ">", "<", "="]),
-
-    ("Puzzle — Seating arrangement",
-     "text", "Q10", "screen",
-     "8 persons sit around circular table A sits 3rd left of E B sits opposite D find who sits right of A",
-     ["PUZZLE"]),
-
-    ("Garbage input",
-     "text", "Q11", "screen", "xzq !! 999 @@@",
-     ["GARBAGE"]),
+    (
+        "GK",
+        "text",
+        "Q4",
+        "screen",
+        "Where is ISRO headquarters situated?",
+        ["bangalore"]
+    )
 ]
 
 
-def _c(t, code): return f"\033[{code}m{t}\033[0m"
-def green(t):  return _c(t, "92")
-def red(t):    return _c(t, "91")
-def yellow(t): return _c(t, "93")
-def cyan(t):   return _c(t, "96")
-def bold(t):   return _c(t, "1")
-def dim(t):    return _c(t, "2")
+def _c(t, code):
+    return f"\033[{code}m{t}\033[0m"
 
 
-def run_auto_tests(base: str = BASE_URL):
-    print(bold(cyan("\n  ╔══════════════════════════════════════════╗")))
-    print(bold(cyan("  ║       AUTO TEST SUITE v2.1               ║")))
-    print(bold(cyan("  ╚══════════════════════════════════════════╝\n")))
+def green(t):
+    return _c(t, "92")
 
-    passed = failed = 0
-    n = len(AUTO_TESTS)
 
-    for i, (name, endpoint, qid, mode, payload, expect) in enumerate(AUTO_TESTS, 1):
+def red(t):
+    return _c(t, "91")
+
+
+def yellow(t):
+    return _c(t, "93")
+
+
+def cyan(t):
+    return _c(t, "96")
+
+
+def bold(t):
+    return _c(t, "1")
+
+
+def run_auto_tests(base=BASE_URL):
+
+    print(bold(cyan("\nAUTO TESTS\n")))
+
+    passed = 0
+    failed = 0
+
+    for i, test in enumerate(AUTO_TESTS, 1):
+
+        name, endpoint, qid, mode, payload, expect = test
+
         try:
+
             if endpoint == "health":
-                resp = requests.get(base + "/health", timeout=10)
+
+                resp = requests.get(
+                    base + "/health",
+                    timeout=10
+                )
+
             else:
+
                 resp = requests.post(
                     base + "/solve-text",
-                    data={"qid": qid, "text": payload, "mode": mode},
+                    data={
+                        "qid": qid,
+                        "text": payload,
+                        "mode": mode
+                    },
                     timeout=60
                 )
 
             result = resp.json()
-            dump   = json.dumps(result).lower()
-            ok     = any(kw.lower() in dump for kw in expect)
-            label  = green("PASS") if ok else red("FAIL")
 
-            print(f"  [{i:02}/{n}] [{label}]  {name}")
+            dump = json.dumps(result).lower()
+
+            ok = any(
+                kw.lower() in dump
+                for kw in expect
+            )
+
             if ok:
-                ans = result.get("ANS", result.get("status", ""))
-                # Written page: show all answers
-                if isinstance(ans, dict):
-                    for k, v in ans.items():
-                        print(f"           {yellow(k)} → {green(str(v))}")
-                else:
-                    print(f"           ANS  : {green(str(ans)[:80])}")
-                print(f"           CONF : {result.get('CONF', '—')}")
+                print(green(f"[PASS] {name}"))
                 passed += 1
             else:
-                print(f"           Expected : {yellow(str(expect))}")
-                print(f"           Got      : {red(json.dumps(result)[:150])}")
+                print(red(f"[FAIL] {name}"))
+                print(result)
                 failed += 1
 
-        except requests.exceptions.ConnectionError:
-            print(f"  [{i:02}/{n}] [{red('ERR')}]  {name}  ← server not running")
-            failed += 1
         except Exception as e:
-            print(f"  [{i:02}/{n}] [{red('ERR')}]  {name} → {e}")
+
+            print(red(f"[ERR] {name}: {e}"))
             failed += 1
-        print()
 
-    print(bold(f"  Result : {green(str(passed)+' passed')}  {red(str(failed)+' failed')}  ({n} total)\n"))
-
-
-# ─────────────────────────────────────────────
-# MANUAL TESTER (CLI)
-# ─────────────────────────────────────────────
-
-HELP = """
-  COMMANDS
-  ──────────────────────────────────────────────────────
-  t              →  solve single question text
-  w              →  solve written page (multiline OCR text)
-  i              →  solve screen image
-  p              →  solve written page image
-  h              →  health check
-  auto           →  run auto test suite
-  help           →  this menu
-  q / exit       →  quit
-  ──────────────────────────────────────────────────────
-  SHORTCUTS
-  t <text>                   →  single question, QID auto
-  t <qid> :: <text>          →  single question with QID
-  w <qid> :: <text>          →  written multiline, starting QID
-  i <path>                   →  screen image, QID auto
-  i <qid> :: <path>          →  screen image with QID
-  p <qid> :: <path>          →  written page image, starting QID
-  ──────────────────────────────────────────────────────
-  EXAMPLES
-  t Q1 :: 2,4,12,60,420,?
-  t Q2 :: gih invest 1 5 lacs prfit 1 4 lacs
-  t Q3 :: 1,-5,6;1,-4,4
-  w Q1 :: Q1: 2,4,12,60,420,?\\nQ2: 20,30,55,?,310
-  i Q5 :: /home/pi/screen_q5.jpg
-  p Q1 :: /home/pi/written_page.jpg
-  ──────────────────────────────────────────────────────
-"""
-
-
-def pretty_result(result: dict):
-    conf = result.get("CONF", 0)
-    try:
-        cf = green if float(conf) >= 0.7 else (yellow if float(conf) >= 0.4 else red)
-    except Exception:
-        cf = yellow
-
-    ans = result.get("ANS", "?")
     print()
-    print(bold(cyan("  ┌─ RESULT ──────────────────────────────────────────")))
-    print(f"  │  QID   : {bold(str(result.get('QID','?')))}")
-
-    if isinstance(ans, dict):
-        print(f"  │  ANS   : {green(bold('(written page — multiple answers)'))}")
-        for k, v in sorted(ans.items(), key=lambda x: int(''.join(filter(str.isdigit, x[0])) or '0')):
-            print(f"  │    {yellow(k)} → {green(bold(str(v)))}")
-    else:
-        print(f"  │  ANS   : {green(bold(str(ans)))}")
-
-    print(f"  │  TYPE  : {yellow(str(result.get('TYPE','?')))}")
-    print(f"  │  CONF  : {cf(str(conf))}")
-    print(f"  │  STEPS : {dim(str(result.get('STEPS','—')))}")
-    print(bold(cyan("  └────────────────────────────────────────────────────")))
+    print(green(f"Passed: {passed}"))
+    print(red(f"Failed: {failed}"))
     print()
 
 
-def ask(p: str) -> str:
-    return input(bold(yellow(f"  {p}: "))).strip()
+# ─────────────────────────────────────────────
+# MANUAL TESTER
+# ─────────────────────────────────────────────
+
+def pretty_result(result):
+
+    print()
+
+    print(cyan("────────────────────────────"))
+
+    print("QID   :", result.get("QID"))
+
+    print("TYPE  :", result.get("TYPE"))
+
+    print("ANS   :", result.get("ANS"))
+
+    print("CONF  :", result.get("CONF"))
+
+    print("STEPS :", result.get("STEPS"))
+
+    print(cyan("────────────────────────────"))
+
+    print()
 
 
-def _send_image(base, qid, path, mode):
-    if not os.path.exists(path):
-        print(red(f"  File not found: {path}")); return
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-        ext  = path.rsplit(".", 1)[-1].lower()
-        mime = {"jpg":"image/jpeg","jpeg":"image/jpeg",
-                "png":"image/png","bmp":"image/bmp"}.get(ext, "image/jpeg")
-        label = "WRITTEN PAGE" if mode == "written" else "SCREEN"
-        print(yellow(f"\n  [{qid}] Sending {len(data)//1024}KB [{label}] →"))
-        r = requests.post(
-            base + "/solve-image",
-            files={"image": (os.path.basename(path), data, mime)},
-            data={"qid": qid, "mode": mode},
-            timeout=90
-        )
-        pretty_result(r.json())
-    except requests.exceptions.ConnectionError:
-        print(red("  Server not running."))
-    except Exception as e:
-        print(red(f"  Error: {e}"))
+def run_manual(base=BASE_URL):
 
-
-def run_manual(base: str = BASE_URL):
-    print(bold(cyan("\n  MANUAL TESTER v2.1 — type 'help'\n")))
-    print(cyan(HELP))
+    print(cyan("\nMANUAL TEST MODE\n"))
 
     while True:
+
         try:
-            raw = input(bold(green("\nsolver> "))).strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n  Bye!"); break
+
+            raw = input(green("solver> ")).strip()
+
+        except KeyboardInterrupt:
+
+            print()
+            break
 
         if not raw:
             continue
 
-        tokens = raw.split(None, 1)
-        cmd    = tokens[0].lower()
-        rest   = tokens[1].strip() if len(tokens) > 1 else ""
+        if raw in ["q", "quit", "exit"]:
+            break
 
-        if cmd in ("q", "exit", "quit"):
-            print("  Bye!"); break
+        if raw == "health":
 
-        elif cmd == "help":
-            print(cyan(HELP))
-
-        elif cmd == "h":
             try:
-                r = requests.get(base + "/health", timeout=5)
-                print(f"  {green('OK')} → {r.json()}")
-            except Exception as e:
-                print(red(f"  Not reachable: {e}"))
 
-        elif cmd == "auto":
+                r = requests.get(base + "/health")
+
+                print(r.json())
+
+            except Exception as e:
+
+                print(e)
+
+            continue
+
+        if raw == "auto":
+
             run_auto_tests(base)
 
-        # ── Single question text ──────────────────────────────────
-        elif cmd == "t":
-            if "::" in rest:
-                p = rest.split("::", 1)
-                qid, text = clean_qid(p[0].strip()), p[1].strip()
-            elif rest:
-                qid, text = "auto", rest
-            else:
-                qid  = clean_qid(ask("QID (Enter=auto)") or "auto")
-                text = ask("Question text")
-            if not text:
-                print(red("  Empty.")); continue
-            print(yellow(f"\n  [{qid}] [{dim('screen')}] → {text[:70]}"))
-            try:
-                r = requests.post(base + "/solve-text",
-                                  data={"qid": qid, "text": text, "mode": "screen"},
-                                  timeout=45)
-                pretty_result(r.json())
-            except requests.exceptions.ConnectionError:
-                print(red("  Server not running."))
-            except Exception as e:
-                print(red(f"  Error: {e}"))
+            continue
 
-        # ── Written page multiline text ───────────────────────────
-        elif cmd == "w":
-            if "::" in rest:
-                p = rest.split("::", 1)
-                qid, text = clean_qid(p[0].strip()), p[1].strip()
-            elif rest:
-                qid, text = "Q1", rest
-            else:
-                qid  = clean_qid(ask("Starting QID e.g. Q1") or "Q1")
-                print(bold("  Paste multiline OCR text. Empty line to submit:"))
-                lines = []
-                while True:
-                    line = input()
-                    if line == "":
-                        break
-                    lines.append(line)
-                text = "\n".join(lines)
-            if not text:
-                print(red("  Empty.")); continue
-            print(yellow(f"\n  [{qid}] [{dim('written')}] → {len(text.splitlines())} lines"))
-            try:
-                r = requests.post(base + "/solve-text",
-                                  data={"qid": qid, "text": text, "mode": "written"},
-                                  timeout=60)
-                pretty_result(r.json())
-            except requests.exceptions.ConnectionError:
-                print(red("  Server not running."))
-            except Exception as e:
-                print(red(f"  Error: {e}"))
+        try:
 
-        # ── Screen image ──────────────────────────────────────────
-        elif cmd == "i":
-            if "::" in rest:
-                p = rest.split("::", 1)
-                qid, path = clean_qid(p[0].strip()), p[1].strip()
-            elif rest:
-                qid, path = "auto", rest
-            else:
-                qid  = clean_qid(ask("QID") or "auto")
-                path = ask("Image path")
-            _send_image(base, qid, path, "screen")
+            qid = "Q1"
 
-        # ── Written page image ────────────────────────────────────
-        elif cmd == "p":
-            if "::" in rest:
-                p = rest.split("::", 1)
-                qid, path = clean_qid(p[0].strip()), p[1].strip()
-            elif rest:
-                qid, path = "Q1", rest
-            else:
-                qid  = clean_qid(ask("Starting QID e.g. Q1") or "Q1")
-                path = ask("Written page image path")
-            _send_image(base, qid, path, "written")
+            text = raw
 
-        else:
-            print(yellow(f"  Unknown: '{cmd}' — type 'help'"))
+            if "::" in raw:
+
+                qid, text = raw.split("::", 1)
+
+                qid = clean_qid(qid)
+
+            r = requests.post(
+                base + "/solve-text",
+                data={
+                    "qid": qid,
+                    "text": text,
+                    "mode": "screen"
+                },
+                timeout=60
+            )
+
+            pretty_result(r.json())
+
+        except Exception as e:
+
+            print(red(str(e)))
 
 
 # ─────────────────────────────────────────────
 # ENTRY POINT
 # ─────────────────────────────────────────────
+
 if __name__ == "__main__":
+
     args = sys.argv[1:]
+
     base = BASE_URL
 
     if "--base" in args:
-        idx  = args.index("--base")
+
+        idx = args.index("--base")
+
         base = args[idx + 1].rstrip("/")
 
     if "--test" in args:
+
         run_auto_tests(base)
+
     elif "--manual" in args:
+
         run_manual(base)
+
     elif "--testall" in args:
+
         run_auto_tests(base)
+
         run_manual(base)
+
     else:
+
         if not API_KEY:
-            print(red("  OPENAI_API_KEY not set!"))
-            print(yellow("  export OPENAI_API_KEY='sk-...'"))
+
+            print(red("OPENAI_API_KEY not set"))
+
             sys.exit(1)
-        print(bold(green("\n  Exam Solver Server v2.1")))
-        print(f"  Docs    : {BASE_URL}/docs")
-        print(f"  Model   : {MODEL}")
-        print(f"  Test    : python server.py --test")
-        print(f"  Manual  : python server.py --manual\n")
-        uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+
+        print(green("\nExam Solver Server v3.0"))
+
+        print("Fast model :", FAST_MODEL)
+
+        print("Fact model :", FACT_MODEL)
+
+        print()
+
+        uvicorn.run(
+            "server:app",
+            host="0.0.0.0",
+            port=8000,
+            reload=False
+        )
