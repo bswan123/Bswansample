@@ -1,45 +1,9 @@
 #!/usr/bin/env python3
-"""
-EXAM SOLVER SERVER — v7.0
-====================================================
-
-NEW IN v7
----------
-✔ Smart classifier routing
-✔ Selective web search
-✔ Faster responses
-✔ Lower token usage
-✔ Cleaner OCR
-✔ Removes <think> blocks
-✔ Better CA/GA detection
-✔ Faster arithmetic/reasoning
-
-FLOW
-----
-OCR/Text
-↓
-Classifier
-↓
-if CA/GA/Computer/Banking:
-    GPT + Web Search
-else:
-    GPT only
-↓
-Compact answer
-
-RUN
----
-python server.py
-python server.py --manual
-python server.py --test
-"""
 
 import os
 import re
 import sys
-import json
 import base64
-import requests
 
 from datetime import datetime
 
@@ -55,15 +19,13 @@ import uvicorn
 # CONFIG
 # =========================================================
 
-BASE_URL = "https://bswansample-1-h2uw.onrender.com"
-
 API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 MODEL = "gpt-4o"
 
 CLASSIFIER_MODEL = "gpt-4o-mini"
 
-MAX_TOKENS = 300
+MAX_TOKENS = 500
 
 LOG_DIR = "logs"
 
@@ -83,8 +45,8 @@ WEB_CATEGORIES = {
 }
 
 app = FastAPI(
-    title="Exam Solver API v7",
-    version="7.0"
+    title="Exam Solver API v7.1",
+    version="7.1"
 )
 
 client = OpenAI(api_key=API_KEY)
@@ -122,9 +84,6 @@ def clean_text(text: str) -> str:
         "HTIP": "HTTP",
         "RBl": "RBI",
         "UP1": "UPI",
-        "prfit": "profit",
-        "invst": "invest",
-        "gih": "Gita",
         "lndia": "India",
         "ﬁ": "fi",
         "ﬂ": "fl",
@@ -152,6 +111,8 @@ def strip_think_blocks(text: str) -> str:
         flags=re.DOTALL | re.IGNORECASE
     )
 
+    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+
     text = re.sub(r'\n{3,}', '\n\n', text)
 
     return text.strip()
@@ -166,7 +127,7 @@ def extract_output_text(resp) -> str:
         if text:
             return text.strip()
 
-    except AttributeError:
+    except:
         pass
 
     try:
@@ -196,13 +157,9 @@ def log_failure(kind: str, raw_input: str, output: str):
 
             f.write("-" * 80 + "\n")
 
-            f.write("INPUT:\n")
-
             f.write(raw_input[:4000] + "\n")
 
             f.write("-" * 80 + "\n")
-
-            f.write("OUTPUT:\n")
 
             f.write(output[:4000] + "\n")
 
@@ -241,7 +198,7 @@ def looks_bad_output(text: str) -> bool:
 def classify_question(text: str) -> str:
 
     prompt = f"""
-Classify this IBPS/banking exam question into EXACTLY ONE category.
+Classify this IBPS/banking question into ONE category only.
 
 Categories:
 - arithmetic
@@ -257,7 +214,7 @@ Categories:
 Question:
 {text}
 
-Return ONLY category name.
+Return ONLY category.
 """
 
     try:
@@ -303,24 +260,157 @@ Return ONLY category name.
 # =========================================================
 
 UNIVERSAL_PROMPT = """
-You are an expert IBPS/SBI/RRB banking exam solver.
+You are an ultra-compact IBPS/SBI/RRB/NABARD banking exam solver.
 
 OCR may contain mistakes.
 Auto-correct intelligently.
 
-RULES:
+==================================================
+CORE RULES
+==================================================
+
 1. Solve accurately
-2. Keep answers SHORT
-3. No explanations unless puzzle
-4. No markdown
-5. No JSON
-6. If MCQ exists:
-   return option letter + answer
-7. For puzzle:
-   return final arrangement only
-8. For arithmetic:
-   return final value only
+2. Return FINAL answer only
+3. Keep answers SHORT and STRUCTURED
+4. No explanations
+5. No reasoning steps
+6. No markdown
+7. No JSON
+8. No option analysis
 9. Never refuse
+10. Never output thinking
+11. Ignore OCR garbage if obvious
+
+==================================================
+QUESTION IDENTIFICATION RULE
+==================================================
+
+Every answer MUST include:
+
+1. Question Number
+IF visible in OCR
+
+OR
+
+2. A short Question Identifier
+
+The identifier must contain:
+- question type
+- 3–8 important words/numbers/symbols
+- enough context to uniquely identify question
+
+==================================================
+EXAMPLES
+==================================================
+
+Question No. 44
+
+Quadratic:
+x² - 9
+
+Answer:
+x > y
+
+--------------------------------------------------
+
+Question No. 70
+
+Machine Input:
+32 64 55
+
+Final Answer:
+48
+
+--------------------------------------------------
+
+Question No. 18
+
+Computer:
+Run dialog shortcut
+
+Answer:
+Windows + R
+
+--------------------------------------------------
+
+Question No. 91
+
+Wrong Number:
+15 18 42
+
+Answer:
+506
+
+--------------------------------------------------
+
+Question No. 121
+
+Puzzle:
+Floor-flat arrangement
+
+Floor 5:
+A lives in Flat A
+G lives in Flat B
+
+--------------------------------------------------
+
+Question No. 56
+
+Direction:
+North-East movement
+
+Answer:
+North-East
+
+--------------------------------------------------
+
+Question No. 88
+
+Current Affairs:
+Australian Open Women
+
+Answer:
+Aryna Sabalenka
+
+--------------------------------------------------
+
+Question No. 12
+
+Simplification:
+28²/7 × 16²/8
+
+Answer:
+345
+
+==================================================
+PUZZLE FORMATTING
+==================================================
+
+For floor/flat/month-date/parallel row/rectangular arrangement:
+
+Return COMPLETE human-readable arrangement.
+
+Mention:
+- floor
+- flat
+- corner
+- facing direction
+- top/bottom
+when relevant.
+
+==================================================
+STRICT
+==================================================
+
+1. NEVER return option letters
+2. NEVER explain
+3. NEVER return paragraph answers
+4. Keep identifiers short
+5. For maths use equation fragments
+6. For puzzles mention arrangement type
+7. For CA mention event/topic
+8. For computer mention feature/topic
+9. For machine input show final useful steps only
 """
 
 
@@ -373,17 +463,25 @@ Solve accurately.
 
     ans = strip_think_blocks(ans)
 
+    ans = ans.strip()
+
+    print()
+    print("=" * 60)
+    print("FINAL ANSWER")
+    print("=" * 60)
+    print(ans)
+    print("=" * 60)
+    print()
+
     if looks_bad_output(ans):
 
         log_failure("TEXT", raw, ans)
 
     return {
 
-        "QID": qid,
+        "qid": qid,
 
-        "ANSWER": ans,
-
-        "RAW_TEXT": raw[:500]
+        "answer": ans
     }
 
 
@@ -428,8 +526,6 @@ def call_gpt_image(
 
     b64 = base64.b64encode(img_bytes).decode()
 
-    # OCR STEP
-
     resp = client.responses.create(
 
         model=MODEL,
@@ -449,7 +545,6 @@ Extract ONLY English question text.
 Ignore Hindi.
 Ignore UI/buttons/timers.
 Do not solve.
-No explanations.
 """
                     },
 
@@ -463,7 +558,7 @@ No explanations.
             }
         ],
 
-        max_output_tokens=220,
+        max_output_tokens=250,
 
         temperature=0
     )
@@ -496,7 +591,7 @@ def health():
 
         "model": MODEL,
 
-        "version": "7.0",
+        "version": "7.1",
 
         "classifier": True,
 
@@ -559,66 +654,6 @@ async def solve_image(
 
 
 # =========================================================
-# MANUAL TEST MODE
-# =========================================================
-
-def run_manual():
-
-    while True:
-
-        try:
-
-            raw = input("\nsolver> ").strip()
-
-        except KeyboardInterrupt:
-
-            print()
-
-            break
-
-        if not raw:
-            continue
-
-        if raw in ["q", "quit", "exit"]:
-            break
-
-        try:
-
-            qid = "Q1"
-
-            text = raw
-
-            if "::" in raw:
-
-                qid, text = raw.split("::", 1)
-
-                qid = clean_qid(qid)
-
-            r = requests.post(
-
-                BASE_URL + "/solve-text",
-
-                data={
-                    "qid": qid,
-                    "text": text
-                },
-
-                timeout=180
-            )
-
-            print()
-            print("=" * 60)
-
-            print(r.json())
-
-            print("=" * 60)
-
-        except Exception as e:
-
-            print(e)
-
-
-# =========================================================
 # ENTRY
 # =========================================================
 
@@ -630,25 +665,19 @@ if __name__ == "__main__":
 
         sys.exit(1)
 
-    if "--manual" in sys.argv:
+    print("\nExam Solver Server v7.1")
+    print("Model      :", MODEL)
+    print("Classifier :", CLASSIFIER_MODEL)
+    print("Max Tokens :", MAX_TOKENS)
+    print()
 
-        run_manual()
+    uvicorn.run(
 
-    else:
+        "server:app",
 
-        print("\nExam Solver Server v7")
-        print("Model      :", MODEL)
-        print("Classifier :", CLASSIFIER_MODEL)
-        print("Max Tokens :", MAX_TOKENS)
-        print()
+        host="0.0.0.0",
 
-        uvicorn.run(
+        port=8000,
 
-            "server:app",
-
-            host="0.0.0.0",
-
-            port=8000,
-
-            reload=False
-        )
+        reload=False
+    )
