@@ -311,15 +311,7 @@ x² - 9
 Answer:
 x > y
 
---------------------------------------------------
 
-Question No. 70
-
-Machine Input:
-32 64 55
-
-Final Answer:
-48
 
 --------------------------------------------------
 
@@ -342,28 +334,6 @@ Answer:
 506
 
 --------------------------------------------------
-
-Question No. 121
-
-Puzzle:
-Floor-flat arrangement
-
-Floor 5:
-A lives in Flat A
-G lives in Flat B
-
---------------------------------------------------
-
-Question No. 56
-
-Direction:
-North-East movement
-
-Answer:
-North-East
-
---------------------------------------------------
-
 Question No. 88
 
 Current Affairs:
@@ -381,6 +351,75 @@ Simplification:
 
 Answer:
 345
+==================================================
+REASONING SET QUESTIONS
+==================================================
+
+For reasoning-set based questions:
+
+- machine input
+- puzzles
+- arrangements
+- direction sense
+- blood relation
+- ranking/order
+- scheduling
+
+Return SHORT NARRATED LOGIC.
+
+The narration must:
+
+1. Preserve important intermediate states
+2. Preserve arrangement structure
+3. Preserve directional movement
+4. Preserve machine input steps
+5. Help solve follow-up questions
+6. Be easy to understand through TTS
+7. Use short spoken sentences
+
+Do NOT give chain-of-thought reasoning.
+
+Instead give:
+- final arrangement
+- final structure
+- important intermediate states
+- important transitions
+
+==================================================
+EXAMPLES
+==================================================
+
+Machine input.
+
+Step 1.
+64 32 55
+
+Step 2.
+64 55 32
+
+Final output.
+48
+
+--------------------------------------------------
+
+Final arrangement.
+
+The Chief Executive Officer belongs to London.
+
+The Executive Director belongs to Moscow.
+
+The Managing Director belongs to New York.
+
+--------------------------------------------------
+
+Direction summary.
+
+Varuna walks west for 12 meters.
+
+Then north for 10 meters.
+
+Final position.
+Point M is east of point G.
 
 ==================================================
 PUZZLE FORMATTING
@@ -403,14 +442,14 @@ STRICT
 ==================================================
 
 1. NEVER return option letters
-2. NEVER explain
+2. NEVER explain unnecessarily 
 3. NEVER return paragraph answers
 4. Keep identifiers short
 5. For maths use equation fragments
 6. For puzzles mention arrangement type
 7. For CA mention event/topic
 8. For computer mention feature/topic
-9. For machine input show final useful steps only
+9. Do NOT give unnecessary explanations
 """
 
 
