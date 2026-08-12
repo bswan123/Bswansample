@@ -23,7 +23,6 @@ API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 MODEL = "gpt-5.4-mini"
 
-
 MAX_TOKENS = 2000
 
 LOG_DIR = "logs"
@@ -55,7 +54,7 @@ def clean_qid(qid: str) -> str:
 
         return "Q" + m.group() if m else "Q1"
 
-    except:
+    except Exception:
 
         return "Q1"
 
@@ -100,61 +99,174 @@ def strip_think_blocks(text: str) -> str:
         flags=re.DOTALL | re.IGNORECASE
     )
 
-    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    text = re.sub(
+        r'```.*?```',
+        '',
+        text,
+        flags=re.DOTALL
+    )
 
     text = re.sub(r'\n{3,}', '\n\n', text)
 
     return text.strip()
 
 
+# =========================================================
+# ROBUST OPENAI OUTPUT EXTRACTION
+# =========================================================
+
 def extract_output_text(resp) -> str:
 
-    try:
-
-        text = resp.output_text
-
-        if text:
-            return text.strip()
-
-    except:
-        pass
+    # -----------------------------------------------------
+    # 1. Preferred Responses API convenience property
+    # -----------------------------------------------------
 
     try:
 
-        text = resp.choices[0].message.content
+        text = getattr(resp, "output_text", None)
 
         if text:
-            return text.strip()
 
-    except:
+            return str(text).strip()
+
+    except Exception:
+
         pass
+
+
+    # -----------------------------------------------------
+    # 2. Responses API output structure fallback
+    #
+    # response.output
+    #     -> message
+    #         -> content
+    #             -> output_text
+    # -----------------------------------------------------
+
+    try:
+
+        output = getattr(resp, "output", None)
+
+        if output:
+
+            parts = []
+
+            for item in output:
+
+                content = getattr(item, "content", None)
+
+                if not content:
+                    continue
+
+                for part in content:
+
+                    part_type = getattr(
+                        part,
+                        "type",
+                        ""
+                    )
+
+                    if part_type == "output_text":
+
+                        text = getattr(
+                            part,
+                            "text",
+                            ""
+                        )
+
+                        if text:
+
+                            parts.append(
+                                str(text)
+                            )
+
+            if parts:
+
+                return "\n".join(parts).strip()
+
+    except Exception:
+
+        pass
+
+
+    # -----------------------------------------------------
+    # 3. Legacy compatibility fallback
+    # -----------------------------------------------------
+
+    try:
+
+        choices = getattr(resp, "choices", None)
+
+        if choices:
+
+            message = choices[0].message
+
+            content = getattr(
+                message,
+                "content",
+                None
+            )
+
+            if content:
+
+                return str(content).strip()
+
+    except Exception:
+
+        pass
+
 
     return ""
 
 
-def log_failure(kind: str, raw_input: str, output: str):
+def log_failure(
+    kind: str,
+    raw_input: str,
+    output: str
+):
 
     try:
 
-        with open(FAIL_LOG, "a", encoding="utf-8") as f:
+        with open(
+            FAIL_LOG,
+            "a",
+            encoding="utf-8"
+        ) as f:
 
-            f.write("\n" + "=" * 80 + "\n")
+            f.write(
+                "\n" + "=" * 80 + "\n"
+            )
 
-            f.write(f"TIME: {datetime.now()}\n")
+            f.write(
+                f"TIME: {datetime.now()}\n"
+            )
 
-            f.write(f"TYPE: {kind}\n")
+            f.write(
+                f"TYPE: {kind}\n"
+            )
 
-            f.write("-" * 80 + "\n")
+            f.write(
+                "-" * 80 + "\n"
+            )
 
-            f.write(raw_input[:4000] + "\n")
+            f.write(
+                raw_input[:4000] + "\n"
+            )
 
-            f.write("-" * 80 + "\n")
+            f.write(
+                "-" * 80 + "\n"
+            )
 
-            f.write(output[:4000] + "\n")
+            f.write(
+                output[:4000] + "\n"
+            )
 
-            f.write("=" * 80 + "\n")
+            f.write(
+                "=" * 80 + "\n"
+            )
 
-    except:
+    except Exception:
+
         pass
 
 
@@ -163,6 +275,7 @@ def looks_bad_output(text: str) -> bool:
     t = text.strip().lower()
 
     if not t:
+
         return True
 
     bad_patterns = [
@@ -177,7 +290,10 @@ def looks_bad_output(text: str) -> bool:
         "i do not have",
     ]
 
-    return any(x in t for x in bad_patterns)
+    return any(
+        x in t
+        for x in bad_patterns
+    )
 
 
 # =========================================================
@@ -187,61 +303,93 @@ def looks_bad_output(text: str) -> bool:
 UNIVERSAL_PROMPT = """
 You are a highly accurate exam question solver.
 
-The input is OCR text from a question image. OCR may contain mistakes.
+The input is OCR text from a question image.
+OCR may contain mistakes.
 Correct obvious OCR errors intelligently.
 
-Supported question types:
+SUPPORTED QUESTION TYPES
+
 - arithmetic and mathematical word problems
 - puzzles and seating arrangements
 - English parajumble
 - English error detection
 
 CORE RULES
+
 1. Solve accurately.
+
 2. Return the answer only, without the QID.
-3. Do not return option letters unless the question itself requires an option-letter answer.
+
+3. Do not return option letters unless the question itself
+   requires an option-letter answer.
+
 4. Do not return JSON.
+
 5. Do not return markdown.
+
 6. Do not reveal chain-of-thought or hidden reasoning.
+
 7. Do not give unnecessary explanations.
-8. If a puzzle or arrangement requires a complete arrangement to establish the answer, provide the complete useful arrangement in short, TTS-friendly sentences.
-9. For arithmetic, give the final numerical answer and only the minimum equation/unit needed for clarity.
+
+8. If a puzzle or arrangement requires a complete arrangement
+   to establish the answer, provide the complete useful
+   arrangement in short, TTS-friendly sentences.
+
+9. For arithmetic, give the final numerical answer and only
+   the minimum equation or unit needed for clarity.
+
 10. For parajumble, give the correct sequence clearly.
-11. For error detection, identify the incorrect part and the correction briefly.
+
+11. For error detection, identify the incorrect part and
+    the correction briefly.
+
 12. Ignore obvious OCR garbage when the intended text is clear.
 
+
 PUZZLES / SEATING ARRANGEMENTS
+
 For every puzzle, seating arrangement, floor arrangement,
 month/date arrangement, row arrangement, circular arrangement,
-or other multi-variable arrangement:
+square arrangement, or other multi-variable arrangement:
 
 Solve the entire puzzle first.
 
-Return the COMPLETE FINAL ARRANGEMENT, even if the question asks
-only one specific question about the arrangement.
+Return the COMPLETE FINAL ARRANGEMENT, even if the question
+asks only one specific question about the arrangement.
 
 Include all relevant variables such as:
-person, position, facing direction, colour, city, floor,
-flat, date, month, etc. whenever they are part of the puzzle.
+
+person
+position
+facing direction
+colour
+city
+floor
+flat
+date
+month
+
+whenever they are part of the puzzle.
 
 Do not return only the answer to the final question.
-For every puzzle or arrangement question:
 
-First solve the complete puzzle.
+The complete arrangement is mandatory for multi-variable
+puzzles because it may be needed to answer follow-up questions.
 
-Then return the complete final arrangement.
-
-Do this even if the question asks only one specific question.
-
-Include all relevant variables:
-person, position, facing, colour, city, etc.
-
-Never return only the final requested person's answer.
 
 TTS FORMAT
-Write the final result so it sounds natural when spoken through an earpiece.
+
+Write the final result so it sounds natural when spoken
+through an earpiece.
+
 Use short sentences.
-Do not include the question number because the system adds the QID separately.
+
+Do not include the question number because the system
+adds the QID separately.
+
+Do not include the QID in the answer.
+
+Do not output JSON.
 """
 
 
@@ -254,8 +402,6 @@ def solve_text_internal(
     raw: str
 ):
 
-    tools = []
-
     user_msg = f"""
 QID: {qid}
 
@@ -265,37 +411,82 @@ Question:
 Solve accurately.
 """
 
-    resp = client.responses.create(
+    try:
 
-        model=MODEL,
+        resp = client.responses.create(
 
-        tools=tools,
+            model=MODEL,
 
-        input=[
+            input=[
 
-            {
-                "role": "system",
-                "content": UNIVERSAL_PROMPT
-            },
+                {
+                    "role": "system",
+                    "content": UNIVERSAL_PROMPT
+                },
 
-            {
-                "role": "user",
-                "content": user_msg
+                {
+                    "role": "user",
+                    "content": user_msg
+                }
+
+            ],
+
+            max_output_tokens=MAX_TOKENS,
+
+            reasoning={
+                "effort": "medium"
             }
-        ],
+        )
 
-        max_output_tokens=MAX_TOKENS,
+    except Exception as e:
 
-        reasoning={
-            "effort": "medium"
+        error_text = str(e)
+
+        print()
+        print("=" * 60)
+        print("OPENAI API ERROR")
+        print("=" * 60)
+        print(error_text)
+        print("=" * 60)
+        print()
+
+        log_failure(
+            "OPENAI_API_ERROR",
+            raw,
+            error_text
+        )
+
+        return {
+
+            "qid": qid,
+
+            "answer": ""
         }
-    )
+
+
+    # -----------------------------------------------------
+    # TEMPORARY DEBUG
+    # -----------------------------------------------------
+
+    print()
+    print("=" * 60)
+    print("MODEL RAW OUTPUT")
+    print("=" * 60)
+    print(resp)
+    print("=" * 60)
+    print()
+
+
+    # -----------------------------------------------------
+    # Extract answer
+    # -----------------------------------------------------
 
     ans = extract_output_text(resp)
 
     ans = strip_think_blocks(ans)
 
     ans = ans.strip()
+
 
     print()
     print("=" * 60)
@@ -305,9 +496,15 @@ Solve accurately.
     print("=" * 60)
     print()
 
+
     if looks_bad_output(ans):
 
-        log_failure("TEXT", raw, ans)
+        log_failure(
+            "TEXT",
+            raw,
+            ans
+        )
+
 
     return {
 
@@ -321,7 +518,10 @@ Solve accurately.
 # TEXT SOLVER
 # =========================================================
 
-def call_gpt_text(qid: str, raw: str):
+def call_gpt_text(
+    qid: str,
+    raw: str
+):
 
     raw = clean_text(raw)
 
@@ -331,7 +531,6 @@ def call_gpt_text(qid: str, raw: str):
 
         raw=raw
     )
-
 
 
 # =========================================================
@@ -344,50 +543,102 @@ def call_gpt_image(
     mime: str = "image/jpeg"
 ):
 
-    b64 = base64.b64encode(img_bytes).decode()
+    b64 = base64.b64encode(
+        img_bytes
+    ).decode()
 
-    resp = client.responses.create(
 
-        model=MODEL,
+    try:
 
-        input=[
+        resp = client.responses.create(
 
-            {
-                "role": "user",
+            model=MODEL,
 
-                "content": [
+            input=[
 
-                    {
-                        "type": "input_text",
+                {
+                    "role": "user",
 
-                        "text": """
+                    "content": [
+
+                        {
+                            "type": "input_text",
+
+                            "text": """
 Extract ONLY English question text.
+
 Ignore Hindi.
+
 Ignore UI/buttons/timers.
+
 Do not solve.
 """
-                    },
+                        },
 
-                    {
-                        "type": "input_image",
+                        {
+                            "type": "input_image",
 
-                        "image_url":
-                        f"data:{mime};base64,{b64}"
-                    }
-                ]
+                            "image_url":
+                            f"data:{mime};base64,{b64}"
+                        }
+
+                    ]
+                }
+
+            ],
+
+            max_output_tokens=250,
+
+            reasoning={
+                "effort": "low"
             }
-        ],
+        )
 
-        max_output_tokens=250,
+    except Exception as e:
 
-        reasoning={
-            "effort": "low"
+        error_text = str(e)
+
+        print()
+        print("=" * 60)
+        print("OPENAI IMAGE API ERROR")
+        print("=" * 60)
+        print(error_text)
+        print("=" * 60)
+        print()
+
+        log_failure(
+            "IMAGE_API_ERROR",
+            qid,
+            error_text
+        )
+
+        return {
+
+            "qid": qid,
+
+            "answer": ""
         }
-    )
+
+
+    # -----------------------------------------------------
+    # Temporary debug for image endpoint too
+    # -----------------------------------------------------
+
+    print()
+    print("=" * 60)
+    print("IMAGE MODEL RAW OUTPUT")
+    print("=" * 60)
+    print(resp)
+    print("=" * 60)
+    print()
+
 
     ocr_text = extract_output_text(resp)
 
-    ocr_text = strip_think_blocks(ocr_text)
+    ocr_text = strip_think_blocks(
+        ocr_text
+    )
+
 
     print()
     print("=" * 60)
@@ -397,7 +648,27 @@ Do not solve.
     print("=" * 60)
     print()
 
-    return call_gpt_text(qid, ocr_text)
+
+    if not ocr_text:
+
+        log_failure(
+            "IMAGE_OCR_EMPTY",
+            qid,
+            ""
+        )
+
+        return {
+
+            "qid": qid,
+
+            "answer": ""
+        }
+
+
+    return call_gpt_text(
+        qid,
+        ocr_text
+    )
 
 
 # =========================================================
@@ -424,53 +695,77 @@ def health():
 @app.post("/solve-text")
 async def solve_text(
 
-    qid: str = Form(default="Q1"),
+    qid: str = Form(
+        default="Q1"
+    ),
 
     text: str = Form(...)
 ):
 
     text = clean_text(text)
 
+
     if not text:
 
         return JSONResponse(
 
-            {"error": "empty text"},
+            {
+                "error": "empty text"
+            },
 
             status_code=400
         )
 
+
     qid = clean_qid(qid)
 
-    return call_gpt_text(qid, text)
+
+    return call_gpt_text(
+        qid,
+        text
+    )
 
 
 @app.post("/solve-image")
 async def solve_image(
 
-    qid: str = Form(default="Q1"),
+    qid: str = Form(
+        default="Q1"
+    ),
 
     image: UploadFile = File(...)
 ):
 
     img_bytes = await image.read()
 
+
     if not img_bytes:
 
         return JSONResponse(
 
-            {"error": "empty image"},
+            {
+                "error": "empty image"
+            },
 
             status_code=400
         )
 
-    mime = image.content_type or "image/jpeg"
+
+    mime = (
+        image.content_type
+        or "image/jpeg"
+    )
+
 
     qid = clean_qid(qid)
 
+
     return call_gpt_image(
+
         qid,
+
         img_bytes,
+
         mime
     )
 
@@ -483,14 +778,29 @@ if __name__ == "__main__":
 
     if not API_KEY:
 
-        print("ERROR: OPENAI_API_KEY not set")
+        print(
+            "ERROR: OPENAI_API_KEY not set"
+        )
 
         sys.exit(1)
 
-    print("\nExam Solver Server v7.1")
-    print("Model      :", MODEL)
-    print("Max Tokens :", MAX_TOKENS)
+
+    print(
+        "\nExam Solver Server v7.1"
+    )
+
+    print(
+        "Model      :",
+        MODEL
+    )
+
+    print(
+        "Max Tokens :",
+        MAX_TOKENS
+    )
+
     print()
+
 
     uvicorn.run(
 
