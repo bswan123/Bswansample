@@ -225,6 +225,18 @@ person, position, facing direction, colour, city, floor,
 flat, date, month, etc. whenever they are part of the puzzle.
 
 Do not return only the answer to the final question.
+For every puzzle or arrangement question:
+
+First solve the complete puzzle.
+
+Then return the complete final arrangement.
+
+Do this even if the question asks only one specific question.
+
+Include all relevant variables:
+person, position, facing, colour, city, etc.
+
+Never return only the final requested person's answer.
 
 TTS FORMAT
 Write the final result so it sounds natural when spoken through an earpiece.
