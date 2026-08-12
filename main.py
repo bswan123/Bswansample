@@ -27,17 +27,29 @@ MAX_TOKENS = 2000
 
 LOG_DIR = "logs"
 
-FAIL_LOG = os.path.join(LOG_DIR, "failures.txt")
+FAIL_LOG = os.path.join(
+    LOG_DIR,
+    "failures.txt"
+)
 
-os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(
+    LOG_DIR,
+    exist_ok=True
+)
 
+
+# =========================================================
+# FASTAPI
+# =========================================================
 
 app = FastAPI(
     title="Exam Solver API v7.1",
     version="7.1"
 )
 
-client = OpenAI(api_key=API_KEY)
+client = OpenAI(
+    api_key=API_KEY
+)
 
 
 # =========================================================
@@ -50,9 +62,15 @@ def clean_qid(qid: str) -> str:
 
         qid = str(qid).strip()
 
-        m = re.search(r'\d+', qid)
+        match = re.search(
+            r"\d+",
+            qid
+        )
 
-        return "Q" + m.group() if m else "Q1"
+        if match:
+            return "Q" + match.group()
+
+        return "Q1"
 
     except Exception:
 
@@ -63,8 +81,15 @@ def clean_text(text: str) -> str:
 
     text = str(text)
 
-    text = text.replace("\r\n", "\n")
-    text = text.replace("\r", "\n")
+    text = text.replace(
+        "\r\n",
+        "\n"
+    )
+
+    text = text.replace(
+        "\r",
+        "\n"
+    )
 
     replacements = {
 
@@ -77,36 +102,57 @@ def clean_text(text: str) -> str:
         "ﬂ": "fl",
     }
 
-    for k, v in replacements.items():
+    for old, new in replacements.items():
 
-        text = text.replace(k, v)
+        text = text.replace(
+            old,
+            new
+        )
 
-    text = re.sub(r'[\x00-\x1f\x7f]', '', text)
+    text = re.sub(
+        r"[\x00-\x1f\x7f]",
+        "",
+        text
+    )
 
-    text = re.sub(r' {2,}', ' ', text)
+    text = re.sub(
+        r" {2,}",
+        " ",
+        text
+    )
 
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
 
     return text.strip()
 
 
 def strip_think_blocks(text: str) -> str:
 
+    text = str(text)
+
     text = re.sub(
-        r'<think>.*?</think>',
-        '',
+        r"<think>.*?</think>",
+        "",
         text,
         flags=re.DOTALL | re.IGNORECASE
     )
 
     text = re.sub(
-        r'```.*?```',
-        '',
+        r"```.*?```",
+        "",
         text,
         flags=re.DOTALL
     )
 
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
 
     return text.strip()
 
@@ -118,16 +164,22 @@ def strip_think_blocks(text: str) -> str:
 def extract_output_text(resp) -> str:
 
     # -----------------------------------------------------
-    # 1. Preferred Responses API convenience property
+    # 1. Responses API convenience property
     # -----------------------------------------------------
 
     try:
 
-        text = getattr(resp, "output_text", None)
+        text = getattr(
+            resp,
+            "output_text",
+            None
+        )
 
         if text:
 
-            return str(text).strip()
+            return str(
+                text
+            ).strip()
 
     except Exception:
 
@@ -135,17 +187,16 @@ def extract_output_text(resp) -> str:
 
 
     # -----------------------------------------------------
-    # 2. Responses API output structure fallback
-    #
-    # response.output
-    #     -> message
-    #         -> content
-    #             -> output_text
+    # 2. Responses API output structure
     # -----------------------------------------------------
 
     try:
 
-        output = getattr(resp, "output", None)
+        output = getattr(
+            resp,
+            "output",
+            None
+        )
 
         if output:
 
@@ -153,7 +204,11 @@ def extract_output_text(resp) -> str:
 
             for item in output:
 
-                content = getattr(item, "content", None)
+                content = getattr(
+                    item,
+                    "content",
+                    None
+                )
 
                 if not content:
                     continue
@@ -182,7 +237,9 @@ def extract_output_text(resp) -> str:
 
             if parts:
 
-                return "\n".join(parts).strip()
+                return "\n".join(
+                    parts
+                ).strip()
 
     except Exception:
 
@@ -190,12 +247,16 @@ def extract_output_text(resp) -> str:
 
 
     # -----------------------------------------------------
-    # 3. Legacy compatibility fallback
+    # 3. Legacy Chat Completions compatibility
     # -----------------------------------------------------
 
     try:
 
-        choices = getattr(resp, "choices", None)
+        choices = getattr(
+            resp,
+            "choices",
+            None
+        )
 
         if choices:
 
@@ -209,7 +270,9 @@ def extract_output_text(resp) -> str:
 
             if content:
 
-                return str(content).strip()
+                return str(
+                    content
+                ).strip()
 
     except Exception:
 
@@ -218,6 +281,10 @@ def extract_output_text(resp) -> str:
 
     return ""
 
+
+# =========================================================
+# FAILURE LOGGER
+# =========================================================
 
 def log_failure(
     kind: str,
@@ -250,7 +317,8 @@ def log_failure(
             )
 
             f.write(
-                raw_input[:4000] + "\n"
+                str(raw_input)[:4000]
+                + "\n"
             )
 
             f.write(
@@ -258,7 +326,8 @@ def log_failure(
             )
 
             f.write(
-                output[:4000] + "\n"
+                str(output)[:4000]
+                + "\n"
             )
 
             f.write(
@@ -272,7 +341,7 @@ def log_failure(
 
 def looks_bad_output(text: str) -> bool:
 
-    t = text.strip().lower()
+    t = str(text).strip().lower()
 
     if not t:
 
@@ -291,8 +360,8 @@ def looks_bad_output(text: str) -> bool:
     ]
 
     return any(
-        x in t
-        for x in bad_patterns
+        pattern in t
+        for pattern in bad_patterns
     )
 
 
@@ -394,7 +463,7 @@ Do not output JSON.
 
 
 # =========================================================
-# SOLVER
+# TEXT SOLVER
 # =========================================================
 
 def solve_text_internal(
@@ -410,6 +479,10 @@ Question:
 
 Solve accurately.
 """
+
+    # -----------------------------------------------------
+    # OPENAI API CALL
+    # -----------------------------------------------------
 
     try:
 
@@ -440,48 +513,69 @@ Solve accurately.
 
     except Exception as e:
 
-    error_text = repr(e)
+        error_text = repr(e)
 
-    print()
-    print("=" * 60)
-    print("OPENAI API ERROR")
-    print("=" * 60)
-    print(error_text)
-    print("=" * 60)
-    print()
+        print()
+        print("=" * 60)
+        print("OPENAI API ERROR")
+        print("=" * 60)
+        print(error_text)
+        print("=" * 60)
+        print()
 
-    log_failure(
-        "OPENAI_API_ERROR",
-        raw,
-        error_text
-    )
+        log_failure(
+            "OPENAI_API_ERROR",
+            raw,
+            error_text
+        )
 
-    raise
+        # IMPORTANT:
+        # Do not silently return answer="".
+        # Let FastAPI return the real server error.
+        raise
 
 
     # -----------------------------------------------------
-    # TEMPORARY DEBUG
+    # RAW MODEL DEBUG
     # -----------------------------------------------------
 
     print()
     print("=" * 60)
     print("MODEL RAW OUTPUT")
     print("=" * 60)
-    print(resp)
+
+    try:
+
+        print(resp)
+
+    except Exception:
+
+        print(
+            "Unable to print raw response."
+        )
+
     print("=" * 60)
     print()
 
 
     # -----------------------------------------------------
-    # Extract answer
+    # EXTRACT ANSWER
     # -----------------------------------------------------
 
-    ans = extract_output_text(resp)
+    ans = extract_output_text(
+        resp
+    )
 
-    ans = strip_think_blocks(ans)
+    ans = strip_think_blocks(
+        ans
+    )
 
     ans = ans.strip()
 
+
+    # -----------------------------------------------------
+    # ANSWER DEBUG
+    # -----------------------------------------------------
 
     print()
     print("=" * 60)
@@ -492,6 +586,29 @@ Solve accurately.
     print()
 
 
+    # -----------------------------------------------------
+    # EMPTY OUTPUT CHECK
+    # -----------------------------------------------------
+
+    if not ans:
+
+        log_failure(
+            "EMPTY_MODEL_OUTPUT",
+            raw,
+            repr(resp)
+        )
+
+        # Do not hide this as a successful answer.
+        raise RuntimeError(
+            "OpenAI returned a response, "
+            "but no output text was extracted."
+        )
+
+
+    # -----------------------------------------------------
+    # BAD OUTPUT LOGGING
+    # -----------------------------------------------------
+
     if looks_bad_output(ans):
 
         log_failure(
@@ -500,6 +617,10 @@ Solve accurately.
             ans
         )
 
+
+    # -----------------------------------------------------
+    # FINAL RESPONSE
+    # -----------------------------------------------------
 
     return {
 
@@ -510,7 +631,7 @@ Solve accurately.
 
 
 # =========================================================
-# TEXT SOLVER
+# TEXT SOLVER ROUTE LOGIC
 # =========================================================
 
 def call_gpt_text(
@@ -518,12 +639,12 @@ def call_gpt_text(
     raw: str
 ):
 
-    raw = clean_text(raw)
+    raw = clean_text(
+        raw
+    )
 
     return solve_text_internal(
-
         qid=qid,
-
         raw=raw
     )
 
@@ -542,6 +663,10 @@ def call_gpt_image(
         img_bytes
     ).decode()
 
+
+    # -----------------------------------------------------
+    # IMAGE API CALL
+    # -----------------------------------------------------
 
     try:
 
@@ -564,9 +689,9 @@ Extract ONLY English question text.
 
 Ignore Hindi.
 
-Ignore UI/buttons/timers.
+Ignore UI, buttons and timers.
 
-Do not solve.
+Do not solve the question.
 """
                         },
 
@@ -589,44 +714,57 @@ Do not solve.
             }
         )
 
-
     except Exception as e:
 
-    error_text = repr(e)
+        error_text = repr(e)
 
-    print()
-    print("=" * 60)
-    print("OPENAI IMAGE API ERROR")
-    print("=" * 60)
-    print(error_text)
-    print("=" * 60)
-    print()
+        print()
+        print("=" * 60)
+        print("OPENAI IMAGE API ERROR")
+        print("=" * 60)
+        print(error_text)
+        print("=" * 60)
+        print()
 
-    log_failure(
-        "IMAGE_API_ERROR",
-        qid,
-        error_text
-    )
+        log_failure(
+            "IMAGE_API_ERROR",
+            qid,
+            error_text
+        )
 
-    raise
- 
-    
+        raise
 
 
     # -----------------------------------------------------
-    # Temporary debug for image endpoint too
+    # IMAGE RAW RESPONSE
     # -----------------------------------------------------
 
     print()
     print("=" * 60)
     print("IMAGE MODEL RAW OUTPUT")
     print("=" * 60)
-    print(resp)
+
+    try:
+
+        print(resp)
+
+    except Exception:
+
+        print(
+            "Unable to print raw image response."
+        )
+
     print("=" * 60)
     print()
 
 
-    ocr_text = extract_output_text(resp)
+    # -----------------------------------------------------
+    # EXTRACT OCR
+    # -----------------------------------------------------
+
+    ocr_text = extract_output_text(
+        resp
+    )
 
     ocr_text = strip_think_blocks(
         ocr_text
@@ -642,21 +780,26 @@ Do not solve.
     print()
 
 
+    # -----------------------------------------------------
+    # EMPTY OCR CHECK
+    # -----------------------------------------------------
+
     if not ocr_text:
 
         log_failure(
             "IMAGE_OCR_EMPTY",
             qid,
-            ""
+            repr(resp)
         )
 
-        return {
+        raise RuntimeError(
+            "Image model returned no OCR text."
+        )
 
-            "qid": qid,
 
-            "answer": ""
-        }
-
+    # -----------------------------------------------------
+    # SEND OCR TEXT TO SOLVER
+    # -----------------------------------------------------
 
     return call_gpt_text(
         qid,
@@ -665,7 +808,7 @@ Do not solve.
 
 
 # =========================================================
-# ROUTES
+# HEALTH
 # =========================================================
 
 @app.get("/health")
@@ -685,6 +828,10 @@ def health():
     }
 
 
+# =========================================================
+# SOLVE TEXT
+# =========================================================
+
 @app.post("/solve-text")
 async def solve_text(
 
@@ -695,7 +842,9 @@ async def solve_text(
     text: str = Form(...)
 ):
 
-    text = clean_text(text)
+    text = clean_text(
+        text
+    )
 
 
     if not text:
@@ -710,7 +859,9 @@ async def solve_text(
         )
 
 
-    qid = clean_qid(qid)
+    qid = clean_qid(
+        qid
+    )
 
 
     return call_gpt_text(
@@ -718,6 +869,10 @@ async def solve_text(
         text
     )
 
+
+# =========================================================
+# SOLVE IMAGE
+# =========================================================
 
 @app.post("/solve-image")
 async def solve_image(
@@ -750,7 +905,9 @@ async def solve_image(
     )
 
 
-    qid = clean_qid(qid)
+    qid = clean_qid(
+        qid
+    )
 
 
     return call_gpt_image(
@@ -764,7 +921,7 @@ async def solve_image(
 
 
 # =========================================================
-# ENTRY
+# ENTRY POINT
 # =========================================================
 
 if __name__ == "__main__":
