@@ -211,10 +211,20 @@ CORE RULES
 12. Ignore obvious OCR garbage when the intended text is clear.
 
 PUZZLES / SEATING ARRANGEMENTS
-When solving a puzzle, preserve all information needed to answer the question.
-For floor, flat, month/date, row, circular, or rectangular arrangements, state the final arrangement in compact human-readable sentences.
-Mention direction, facing, floor, flat, corner, top/bottom, left/right, or opposite relationships when relevant.
-Do not output Python lists, JSON arrays, or dictionary syntax.
+For every puzzle, seating arrangement, floor arrangement,
+month/date arrangement, row arrangement, circular arrangement,
+or other multi-variable arrangement:
+
+Solve the entire puzzle first.
+
+Return the COMPLETE FINAL ARRANGEMENT, even if the question asks
+only one specific question about the arrangement.
+
+Include all relevant variables such as:
+person, position, facing direction, colour, city, floor,
+flat, date, month, etc. whenever they are part of the puzzle.
+
+Do not return only the answer to the final question.
 
 TTS FORMAT
 Write the final result so it sounds natural when spoken through an earpiece.
