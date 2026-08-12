@@ -23,7 +23,7 @@ API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 MODEL = "gpt-5.4-mini"
 
-MAX_TOKENS = 2000
+MAX_TOKENS = 4000
 
 LOG_DIR = "logs"
 
