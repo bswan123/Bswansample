@@ -440,28 +440,23 @@ Solve accurately.
 
     except Exception as e:
 
-        error_text = str(e)
+    error_text = repr(e)
 
-        print()
-        print("=" * 60)
-        print("OPENAI API ERROR")
-        print("=" * 60)
-        print(error_text)
-        print("=" * 60)
-        print()
+    print()
+    print("=" * 60)
+    print("OPENAI API ERROR")
+    print("=" * 60)
+    print(error_text)
+    print("=" * 60)
+    print()
 
-        log_failure(
-            "OPENAI_API_ERROR",
-            raw,
-            error_text
-        )
+    log_failure(
+        "OPENAI_API_ERROR",
+        raw,
+        error_text
+    )
 
-        return {
-
-            "qid": qid,
-
-            "answer": ""
-        }
+    raise
 
 
     # -----------------------------------------------------
@@ -594,30 +589,28 @@ Do not solve.
             }
         )
 
+
     except Exception as e:
 
-        error_text = str(e)
+    error_text = repr(e)
 
-        print()
-        print("=" * 60)
-        print("OPENAI IMAGE API ERROR")
-        print("=" * 60)
-        print(error_text)
-        print("=" * 60)
-        print()
+    print()
+    print("=" * 60)
+    print("OPENAI IMAGE API ERROR")
+    print("=" * 60)
+    print(error_text)
+    print("=" * 60)
+    print()
 
-        log_failure(
-            "IMAGE_API_ERROR",
-            qid,
-            error_text
-        )
+    log_failure(
+        "IMAGE_API_ERROR",
+        qid,
+        error_text
+    )
 
-        return {
-
-            "qid": qid,
-
-            "answer": ""
-        }
+    raise
+ 
+    
 
 
     # -----------------------------------------------------
