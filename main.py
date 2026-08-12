@@ -21,9 +21,8 @@ import uvicorn
 
 API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-MODEL = "gpt-4o"
+MODEL = "gpt-5.4-mini"
 
-CLASSIFIER_MODEL = "gpt-4o-mini"
 
 MAX_TOKENS = 500
 
@@ -33,16 +32,6 @@ FAIL_LOG = os.path.join(LOG_DIR, "failures.txt")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
-WEB_SEARCH_TOOL = {
-    "type": "web_search_preview"
-}
-
-WEB_CATEGORIES = {
-    "current_affairs",
-    "banking",
-    "computer",
-    "static_gk"
-}
 
 app = FastAPI(
     title="Exam Solver API v7.1",
@@ -192,264 +181,45 @@ def looks_bad_output(text: str) -> bool:
 
 
 # =========================================================
-# CLASSIFIER
-# =========================================================
-
-def classify_question(text: str) -> str:
-
-    prompt = f"""
-Classify this IBPS/banking question into ONE category only.
-
-Categories:
-- arithmetic
-- reasoning
-- puzzle
-- syllogism
-- coding
-- computer
-- banking
-- current_affairs
-- static_gk
-
-Question:
-{text}
-
-Return ONLY category.
-"""
-
-    try:
-
-        resp = client.responses.create(
-
-            model=CLASSIFIER_MODEL,
-
-            input=prompt,
-
-            max_output_tokens=10,
-
-            temperature=0
-        )
-
-        out = extract_output_text(resp).strip().lower()
-
-        valid = {
-
-            "arithmetic",
-            "reasoning",
-            "puzzle",
-            "syllogism",
-            "coding",
-            "computer",
-            "banking",
-            "current_affairs",
-            "static_gk"
-        }
-
-        if out in valid:
-            return out
-
-    except Exception as e:
-
-        print("classifier error:", e)
-
-    return "reasoning"
-
-
-# =========================================================
 # MAIN PROMPT
 # =========================================================
 
 UNIVERSAL_PROMPT = """
-You are an ultra-compact IBPS/SBI/RRB/NABARD banking exam solver.
+You are a highly accurate exam question solver.
 
-OCR may contain mistakes.
-Auto-correct intelligently.
+The input is OCR text from a question image. OCR may contain mistakes.
+Correct obvious OCR errors intelligently.
 
-==================================================
+Supported question types:
+- arithmetic and mathematical word problems
+- puzzles and seating arrangements
+- English parajumble
+- English error detection
+
 CORE RULES
-==================================================
+1. Solve accurately.
+2. Return the answer only, without the QID.
+3. Do not return option letters unless the question itself requires an option-letter answer.
+4. Do not return JSON.
+5. Do not return markdown.
+6. Do not reveal chain-of-thought or hidden reasoning.
+7. Do not give unnecessary explanations.
+8. If a puzzle or arrangement requires a complete arrangement to establish the answer, provide the complete useful arrangement in short, TTS-friendly sentences.
+9. For arithmetic, give the final numerical answer and only the minimum equation/unit needed for clarity.
+10. For parajumble, give the correct sequence clearly.
+11. For error detection, identify the incorrect part and the correction briefly.
+12. Ignore obvious OCR garbage when the intended text is clear.
 
-1. Solve accurately
-2. Return FINAL answer only
-3. Keep answers SHORT and STRUCTURED
-4. No explanations
-5. No reasoning steps
-6. No markdown
-7. No JSON
-8. No option analysis
-9. Never refuse
-10. Never output thinking
-11. Ignore OCR garbage if obvious
+PUZZLES / SEATING ARRANGEMENTS
+When solving a puzzle, preserve all information needed to answer the question.
+For floor, flat, month/date, row, circular, or rectangular arrangements, state the final arrangement in compact human-readable sentences.
+Mention direction, facing, floor, flat, corner, top/bottom, left/right, or opposite relationships when relevant.
+Do not output Python lists, JSON arrays, or dictionary syntax.
 
-==================================================
-QUESTION IDENTIFICATION RULE
-==================================================
-
-Every answer MUST include:
-
-1. Question Number
-IF visible in OCR
-
-OR
-
-2. A short Question Identifier
-
-The identifier must contain:
-- question type
-- 3–8 important words/numbers/symbols
-- enough context to uniquely identify question
-
-==================================================
-EXAMPLES
-==================================================
-
-Question No. 44
-
-Quadratic:
-x² - 9
-
-Answer:
-x > y
-
-
-
---------------------------------------------------
-
-Question No. 18
-
-Computer:
-Run dialog shortcut
-
-Answer:
-Windows + R
-
---------------------------------------------------
-
-Question No. 91
-
-Wrong Number:
-15 18 42
-
-Answer:
-506
-
---------------------------------------------------
-Question No. 88
-
-Current Affairs:
-Australian Open Women
-
-Answer:
-Aryna Sabalenka
-
---------------------------------------------------
-
-Question No. 12
-
-Simplification:
-28²/7 × 16²/8
-
-Answer:
-345
-==================================================
-REASONING SET QUESTIONS
-==================================================
-
-For reasoning-set based questions:
-
-- machine input
-- puzzles
-- arrangements
-- direction sense
-- blood relation
-- ranking/order
-- scheduling
-
-Return SHORT NARRATED LOGIC.
-
-The narration must:
-
-1. Preserve important intermediate states
-2. Preserve arrangement structure
-3. Preserve directional movement
-4. Preserve machine input steps
-5. Help solve follow-up questions
-6. Be easy to understand through TTS
-7. Use short spoken sentences
-
-Do NOT give chain-of-thought reasoning.
-
-Instead give:
-- final arrangement
-- final structure
-- important intermediate states
-- important transitions
-
-==================================================
-EXAMPLES
-==================================================
-
-Machine input.
-
-Step 1.
-64 32 55
-
-Step 2.
-64 55 32
-
-Final output.
-48
-
---------------------------------------------------
-
-Final arrangement.
-
-The Chief Executive Officer belongs to London.
-
-The Executive Director belongs to Moscow.
-
-The Managing Director belongs to New York.
-
---------------------------------------------------
-
-Direction summary.
-
-Varuna walks west for 12 meters.
-
-Then north for 10 meters.
-
-Final position.
-Point M is east of point G.
-
-==================================================
-PUZZLE FORMATTING
-==================================================
-
-For floor/flat/month-date/parallel row/rectangular arrangement:
-
-Return COMPLETE human-readable arrangement.
-
-Mention:
-- floor
-- flat
-- corner
-- facing direction
-- top/bottom
-when relevant.
-
-==================================================
-STRICT
-==================================================
-
-1. NEVER return option letters
-2. NEVER explain unnecessarily 
-3. NEVER return paragraph answers
-4. Keep identifiers short
-5. For maths use equation fragments
-6. For puzzles mention arrangement type
-7. For CA mention event/topic
-8. For computer mention feature/topic
-9. Do NOT give unnecessary explanations
+TTS FORMAT
+Write the final result so it sounds natural when spoken through an earpiece.
+Use short sentences.
+Do not include the question number because the system adds the QID separately.
 """
 
 
@@ -459,11 +229,10 @@ STRICT
 
 def solve_text_internal(
     qid: str,
-    raw: str,
-    use_web: bool
+    raw: str
 ):
 
-    tools = [WEB_SEARCH_TOOL] if use_web else []
+    tools = []
 
     user_msg = f"""
 QID: {qid}
@@ -495,7 +264,9 @@ Solve accurately.
 
         max_output_tokens=MAX_TOKENS,
 
-        temperature=0
+        reasoning={
+            "effort": "medium"
+        }
     )
 
     ans = extract_output_text(resp)
@@ -532,25 +303,13 @@ def call_gpt_text(qid: str, raw: str):
 
     raw = clean_text(raw)
 
-    category = classify_question(raw)
-
-    use_web = category in WEB_CATEGORIES
-
-    print()
-    print("=" * 60)
-    print("CATEGORY :", category)
-    print("WEB      :", use_web)
-    print("=" * 60)
-    print()
-
     return solve_text_internal(
 
         qid=qid,
 
-        raw=raw,
-
-        use_web=use_web
+        raw=raw
     )
+
 
 
 # =========================================================
@@ -599,7 +358,9 @@ Do not solve.
 
         max_output_tokens=250,
 
-        temperature=0
+        reasoning={
+            "effort": "low"
+        }
     )
 
     ocr_text = extract_output_text(resp)
@@ -632,9 +393,9 @@ def health():
 
         "version": "7.1",
 
-        "classifier": True,
+        "classifier": False,
 
-        "web_search": True
+        "web_search": False
     }
 
 
@@ -706,7 +467,6 @@ if __name__ == "__main__":
 
     print("\nExam Solver Server v7.1")
     print("Model      :", MODEL)
-    print("Classifier :", CLASSIFIER_MODEL)
     print("Max Tokens :", MAX_TOKENS)
     print()
 
