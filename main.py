@@ -784,7 +784,7 @@ def request_text_model(
 
         print(
             "REASONING:",
-            "high"
+            "medium"
         )
 
         print(
