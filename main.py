@@ -815,7 +815,7 @@ def request_text_model(
                 max_output_tokens=MAX_TOKENS,
 
                 reasoning={
-                    "effort": "high"
+                    "effort": "medium"
                 }
             )
 
