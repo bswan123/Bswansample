@@ -29,10 +29,10 @@ MODEL = "gpt-5.4-mini"
 # IMPORTANT:
 # This budget includes reasoning + visible output.
 # 4000 was too small for some reasoning-heavy puzzles.
-MAX_TOKENS = 12000
+MAX_TOKENS = 64000
 
 # OCR gets its own larger budget.
-OCR_MAX_TOKENS = 4000
+OCR_MAX_TOKENS = 64000
 
 # Retry count when OpenAI returns no usable text.
 MAX_RETRIES = 3
